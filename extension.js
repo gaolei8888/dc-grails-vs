@@ -49,55 +49,54 @@ function activate(context) {
     gradleRunProcess = null;
   });
 
-// 3) Grails (Gradle): Debug App
-const debugGrailsAppCommand = vscode.commands.registerCommand('grails.debug', async () => {
-  if (gradleDebugProcess) {
-    vscode.window.showWarningMessage('A Grails debug process is already running.');
-    return;
-  }
-  if (!vscode.workspace.workspaceFolders) {
-    vscode.window.showErrorMessage('No workspace folder found. Open your Grails/Gradle project first.');
-    return;
-  }
-
-  const workspaceFolder = vscode.workspace.workspaceFolders[0].uri.fsPath;
-  vscode.window.showInformationMessage('Starting Grails in debug mode...');
-
-  // Instead of calling a custom "debugGrailsApp" task, pass run-app --debug-jvm to grailsCommand
-  const gradleCmd = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
-  gradleDebugProcess = exec(
-    `${gradleCmd} bootRun --debug-jvm`,
-    { cwd: workspaceFolder }
-  );
-
-  const debugChannel = vscode.window.createOutputChannel('Grails - Debug');
-  debugChannel.show(true);
-
-  gradleDebugProcess.stdout.on('data', data => debugChannel.append(data.toString()));
-  gradleDebugProcess.stderr.on('data', data => debugChannel.append(data.toString()));
-
-  gradleDebugProcess.on('close', code => {
-    vscode.window.showInformationMessage(`Grails debug process exited with code ${code}`);
-    gradleDebugProcess = null;
-  });
-
-  // (Optional) Auto-attach Java debugger after a short delay
-  setTimeout(async () => {
-    const debugConfig = {
-      name: 'Attach to Grails',
-      type: 'java',
-      request: 'attach',
-      hostName: 'localhost',
-      port: 5005 // default for --debug-jvm
-    };
-    try {
-      await vscode.debug.startDebugging(undefined, debugConfig);
-      vscode.window.showInformationMessage('Debugger attached to Grails on port 5005.');
-    } catch (err) {
-      vscode.window.showErrorMessage(`Failed to attach debugger: ${err.message}`);
+  const debugGrailsAppCommand = vscode.commands.registerCommand('grails.debug', async () => {
+    if (gradleDebugProcess) {
+      vscode.window.showWarningMessage('A Grails debug process is already running.');
+      return;
     }
-  }, 3000);
-});
+    if (!vscode.workspace.workspaceFolders) {
+      vscode.window.showErrorMessage('No workspace folder found. Open your Grails/Gradle project first.');
+      return;
+    }
+
+    const workspaceFolder = vscode.workspace.workspaceFolders[0].uri.fsPath;
+    vscode.window.showInformationMessage('Starting Grails in debug mode...');
+
+    // Instead of calling a custom "debugGrailsApp" task, pass run-app --debug-jvm to grailsCommand
+    const gradleCmd = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+    gradleDebugProcess = exec(
+      `${gradleCmd} bootRun --debug-jvm`,
+      { cwd: workspaceFolder }
+    );
+
+    const debugChannel = vscode.window.createOutputChannel('Grails - Debug');
+    debugChannel.show(true);
+
+    gradleDebugProcess.stdout.on('data', data => debugChannel.append(data.toString()));
+    gradleDebugProcess.stderr.on('data', data => debugChannel.append(data.toString()));
+
+    gradleDebugProcess.on('close', code => {
+      vscode.window.showInformationMessage(`Grails debug process exited with code ${code}`);
+      gradleDebugProcess = null;
+    });
+
+    // (Optional) Auto-attach Java debugger after a short delay
+    setTimeout(async () => {
+      const debugConfig = {
+        name: 'Attach to Grails',
+        type: 'java',
+        request: 'attach',
+        hostName: 'localhost',
+        port: 5005 // default for --debug-jvm
+      };
+      try {
+        await vscode.debug.startDebugging(undefined, debugConfig);
+        vscode.window.showInformationMessage('Debugger attached to Grails on port 5005.');
+      } catch (err) {
+        vscode.window.showErrorMessage(`Failed to attach debugger: ${err.message}`);
+      }
+    }, 3000);
+  });
 
   // 4) Grails (Gradle): Stop Debug App
   const stopDebugGrailsCommand = vscode.commands.registerCommand('grails.stopDebug', () => {
