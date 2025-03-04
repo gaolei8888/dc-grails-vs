@@ -1,26 +1,26 @@
 {
-  "name": "dc-grails-vs",
-  "displayName": "DC Grails VS",
-  "description": "An extension for Grails projects",
+  "name": "grails-gradle-extension",
+  "displayName": "Grails & Gradle Extension",
+  "description": "A VS Code extension for running Grails and Gradle tasks.",
   "version": "0.0.1",
+  "publisher": "YourPublisherName",
   "engines": {
-    "vscode": "^1.70.0"
+    "vscode": "^1.60.0"
   },
-
   "categories": [
     "Other"
   ],
-
   "activationEvents": [
-    "onCommand:grails.runApp",
-    "onCommand:grails.stopApp",
-    "onCommand:grails.debug",
-    "onCommand:grails.stopDebug"
   ],
-
   "main": "./extension.js",
-  
   "contributes": {
+    "languages": [
+        {
+          "id": "groovy",
+          "extensions": [ ".groovy" ],
+          "aliases": [ "Groovy", "grails" ]
+        }
+      ],
     "commands": [
       {
         "command": "grails.runApp",
@@ -32,28 +32,799 @@
       },
       {
         "command": "grails.debug",
-        "title": "Grail: Debug"
+        "title": "Grails: Debug App"
       },
       {
         "command": "grails.stopDebug",
-        "title": "Grails: Stop Debugging"
-      }
-    ],
-    "snippets": [
+        "title": "Grails: Stop Debug App"
+      },
       {
-        "language": "groovy",
-        "path": "./snippets/grails-snippets.json"
+        "command": "grails.assemble",
+        "title": "Grails: assemble"
+      },
+      {
+        "command": "grails.bug-report",
+        "title": "Grails: bug-report"
+      },
+      {
+        "command": "grails.clean",
+        "title": "Grails: clean"
+      },
+      {
+        "command": "grails.compile",
+        "title": "Grails: compile"
+      },
+      {
+        "command": "grails.console",
+        "title": "Grails: console"
+      },
+      {
+        "command": "grails.create-command",
+        "title": "Grails: create-command"
+      },
+      {
+        "command": "grails.create-controller",
+        "title": "Grails: create-controller"
+      },
+      {
+        "command": "grails.create-domain-class",
+        "title": "Grails: create-domain-class"
+      },
+      {
+        "command": "grails.create-integration-test",
+        "title": "Grails: create-integration-test"
+      },
+      {
+        "command": "grails.create-interceptor",
+        "title": "Grails: create-interceptor"
+      },
+      {
+        "command": "grails.create-scaffold-controller",
+        "title": "Grails: create-scaffold-controller"
+      },
+      {
+        "command": "grails.create-script",
+        "title": "Grails: create-script"
+      },
+      {
+        "command": "grails.create-service",
+        "title": "Grails: create-service"
+      },
+      {
+        "command": "grails.create-taglib",
+        "title": "Grails: create-taglib"
+      },
+      {
+        "command": "grails.create-unit-test",
+        "title": "Grails: create-unit-test"
+      },
+      {
+        "command": "grails.create-web-socket",
+        "title": "Grails: create-web-socket"
+      },
+      {
+        "command": "grails.create-web-socket-config",
+        "title": "Grails: create-web-socket-config"
+      },
+      {
+        "command": "grails.dbm-changelog-sync",
+        "title": "Grails: dbm-changelog-sync"
+      },
+      {
+        "command": "grails.dbm-changelog-sync-sql",
+        "title": "Grails: dbm-changelog-sync-sql"
+      },
+      {
+        "command": "grails.dbm-changelog-to-groovy",
+        "title": "Grails: dbm-changelog-to-groovy"
+      },
+      {
+        "command": "grails.dbm-clear-checksums",
+        "title": "Grails: dbm-clear-checksums"
+      },
+      {
+        "command": "grails.dbm-create-changelog",
+        "title": "Grails: dbm-create-changelog"
+      },
+      {
+        "command": "grails.dbm-db-doc",
+        "title": "Grails: dbm-db-doc"
+      },
+      {
+        "command": "grails.dbm-diff",
+        "title": "Grails: dbm-diff"
+      },
+      {
+        "command": "grails.dbm-drop-all",
+        "title": "Grails: dbm-drop-all"
+      },
+      {
+        "command": "grails.dbm-future-rollback-count-sql",
+        "title": "Grails: dbm-future-rollback-count-sql"
+      },
+      {
+        "command": "grails.dbm-future-rollback-sql",
+        "title": "Grails: dbm-future-rollback-sql"
+      },
+      {
+        "command": "grails.dbm-generate-changelog",
+        "title": "Grails: dbm-generate-changelog"
+      },
+      {
+        "command": "grails.dbm-generate-gorm-changelog",
+        "title": "Grails: dbm-generate-gorm-changelog"
+      },
+      {
+        "command": "grails.dbm-gorm-diff",
+        "title": "Grails: dbm-gorm-diff"
+      },
+      {
+        "command": "grails.dbm-list-locks",
+        "title": "Grails: dbm-list-locks"
+      },
+      {
+        "command": "grails.dbm-mark-next-changeset-ran",
+        "title": "Grails: dbm-mark-next-changeset-ran"
+      },
+      {
+        "command": "grails.dbm-mark-next-changeset-ran-sql",
+        "title": "Grails: dbm-mark-next-changeset-ran-sql"
+      },
+      {
+        "command": "grails.dbm-previous-changeset-sql",
+        "title": "Grails: dbm-previous-changeset-sql"
+      },
+      {
+        "command": "grails.dbm-release-locks",
+        "title": "Grails: dbm-release-locks"
+      },
+      {
+        "command": "grails.dbm-rollback",
+        "title": "Grails: dbm-rollback"
+      },
+      {
+        "command": "grails.dbm-rollback-count",
+        "title": "Grails: dbm-rollback-count"
+      },
+      {
+        "command": "grails.dbm-rollback-count-sql",
+        "title": "Grails: dbm-rollback-count-sql"
+      },
+      {
+        "command": "grails.dbm-rollback-sql",
+        "title": "Grails: dbm-rollback-sql"
+      },
+      {
+        "command": "grails.dbm-rollback-to-date",
+        "title": "Grails: dbm-rollback-to-date"
+      },
+      {
+        "command": "grails.dbm-rollback-to-date-sql",
+        "title": "Grails: dbm-rollback-to-date-sql"
+      },
+      {
+        "command": "grails.dbm-status",
+        "title": "Grails: dbm-status"
+      },
+      {
+        "command": "grails.dbm-tag",
+        "title": "Grails: dbm-tag"
+      },
+      {
+        "command": "grails.dbm-update",
+        "title": "Grails: dbm-update"
+      },
+      {
+        "command": "grails.dbm-update-count",
+        "title": "Grails: dbm-update-count"
+      },
+      {
+        "command": "grails.dbm-update-count-sql",
+        "title": "Grails: dbm-update-count-sql"
+      },
+      {
+        "command": "grails.dbm-update-sql",
+        "title": "Grails: dbm-update-sql"
+      },
+      {
+        "command": "grails.dbm-validate",
+        "title": "Grails: dbm-validate"
+      },
+      {
+        "command": "grails.dependency-report",
+        "title": "Grails: dependency-report"
+      },
+      {
+        "command": "grails.generate-all",
+        "title": "Grails: generate-all"
+      },
+      {
+        "command": "grails.generate-async-controller",
+        "title": "Grails: generate-async-controller"
+      },
+      {
+        "command": "grails.generate-controller",
+        "title": "Grails: generate-controller"
+      },
+      {
+        "command": "grails.generate-rx-all",
+        "title": "Grails: generate-rx-all"
+      },
+      {
+        "command": "grails.generate-rx-controller",
+        "title": "Grails: generate-rx-controller"
+      },
+      {
+        "command": "grails.generate-service",
+        "title": "Grails: generate-service"
+      },
+      {
+        "command": "grails.generate-views",
+        "title": "Grails: generate-views"
+      },
+      {
+        "command": "grails.gradle",
+        "title": "Grails: gradle"
+      },
+      {
+        "command": "grails.help",
+        "title": "Grails: help"
+      },
+      {
+        "command": "grails.install-joda-time-gorm-mappings",
+        "title": "Grails: install-joda-time-gorm-mappings"
+      },
+      {
+        "command": "grails.install-templates",
+        "title": "Grails: install-templates"
+      },
+      {
+        "command": "grails.list-plugins",
+        "title": "Grails: list-plugins"
+      },
+      {
+        "command": "grails.open",
+        "title": "Grails: open"
+      },
+      {
+        "command": "grails.plugin-info",
+        "title": "Grails: plugin-info"
+      },
+      {
+        "command": "grails.run-command",
+        "title": "Grails: run-command"
+      },
+      {
+        "command": "grails.run-script",
+        "title": "Grails: run-script"
+      },
+      {
+        "command": "grails.s2-create-persistent-token",
+        "title": "Grails: s2-create-persistent-token"
+      },
+      {
+        "command": "grails.s2-create-role-hierarchy-entry",
+        "title": "Grails: s2-create-role-hierarchy-entry"
+      },
+      {
+        "command": "grails.s2-quickstart",
+        "title": "Grails: s2-quickstart"
+      },
+      {
+        "command": "grails.s2ui-create-challenge-questions",
+        "title": "Grails: s2ui-create-challenge-questions"
+      },
+      {
+        "command": "grails.s2ui-override",
+        "title": "Grails: s2ui-override"
+      },
+      {
+        "command": "grails.schema-export",
+        "title": "Grails: schema-export"
+      },
+      {
+        "command": "grails.shell",
+        "title": "Grails: shell"
+      },
+      {
+        "command": "grails.stats",
+        "title": "Grails: stats"
+      },
+      {
+        "command": "grails.stop-app",
+        "title": "Grails: stop-app"
+      },
+      {
+        "command": "grails.test-app",
+        "title": "Grails: test-app"
+      },
+      {
+        "command": "grails.url-mappings-report",
+        "title": "Grails: url-mappings-report"
+      },
+      {
+        "command": "gradle.bootRun",
+        "title": "Gradle: bootRun"
+      },
+      {
+        "command": "gradle.run",
+        "title": "Gradle: run"
+      },
+      {
+        "command": "gradle.assemble",
+        "title": "Gradle: assemble"
+      },
+      {
+        "command": "gradle.bootBuildImage",
+        "title": "Gradle: bootBuildImage"
+      },
+      {
+        "command": "gradle.bootJar",
+        "title": "Gradle: bootJar"
+      },
+      {
+        "command": "gradle.bootJarMainClassName",
+        "title": "Gradle: bootJarMainClassName"
+      },
+      {
+        "command": "gradle.bootRunMainClassName",
+        "title": "Gradle: bootRunMainClassName"
+      },
+      {
+        "command": "gradle.bootWar",
+        "title": "Gradle: bootWar"
+      },
+      {
+        "command": "gradle.bootWarMainClassName",
+        "title": "Gradle: bootWarMainClassName"
+      },
+      {
+        "command": "gradle.build",
+        "title": "Gradle: build"
+      },
+      {
+        "command": "gradle.buildDependents",
+        "title": "Gradle: buildDependents"
+      },
+      {
+        "command": "gradle.buildNeeded",
+        "title": "Gradle: buildNeeded"
+      },
+      {
+        "command": "gradle.classes",
+        "title": "Gradle: classes"
+      },
+      {
+        "command": "gradle.clean",
+        "title": "Gradle: clean"
+      },
+      {
+        "command": "gradle.integrationTestClasses",
+        "title": "Gradle: integrationTestClasses"
+      },
+      {
+        "command": "gradle.jar",
+        "title": "Gradle: jar"
+      },
+      {
+        "command": "gradle.testClasses",
+        "title": "Gradle: testClasses"
+      },
+      {
+        "command": "gradle.war",
+        "title": "Gradle: war"
+      },
+      {
+        "command": "gradle.init",
+        "title": "Gradle: init"
+      },
+      {
+        "command": "gradle.wrapper",
+        "title": "Gradle: wrapper"
+      },
+      {
+        "command": "gradle.assembleBootDist",
+        "title": "Gradle: assembleBootDist"
+      },
+      {
+        "command": "gradle.assembleDist",
+        "title": "Gradle: assembleDist"
+      },
+      {
+        "command": "gradle.bootDistTar",
+        "title": "Gradle: bootDistTar"
+      },
+      {
+        "command": "gradle.bootDistZip",
+        "title": "Gradle: bootDistZip"
+      },
+      {
+        "command": "gradle.distTar",
+        "title": "Gradle: distTar"
+      },
+      {
+        "command": "gradle.distZip",
+        "title": "Gradle: distZip"
+      },
+      {
+        "command": "gradle.installBootDist",
+        "title": "Gradle: installBootDist"
+      },
+      {
+        "command": "gradle.installDist",
+        "title": "Gradle: installDist"
+      },
+      {
+        "command": "gradle.groovydoc",
+        "title": "Gradle: groovydoc"
+      },
+      {
+        "command": "gradle.javadoc",
+        "title": "Gradle: javadoc"
+      },
+      {
+        "command": "gradle.buildEnvironment",
+        "title": "Gradle: buildEnvironment"
+      },
+      {
+        "command": "gradle.dependencies",
+        "title": "Gradle: dependencies"
+      },
+      {
+        "command": "gradle.dependencyInsight",
+        "title": "Gradle: dependencyInsight"
+      },
+      {
+        "command": "gradle.dependencyManagement",
+        "title": "Gradle: dependencyManagement"
+      },
+      {
+        "command": "gradle.help",
+        "title": "Gradle: help"
+      },
+      {
+        "command": "gradle.javaToolchains",
+        "title": "Gradle: javaToolchains"
+      },
+      {
+        "command": "gradle.outgoingVariants",
+        "title": "Gradle: outgoingVariants"
+      },
+      {
+        "command": "gradle.projects",
+        "title": "Gradle: projects"
+      },
+      {
+        "command": "gradle.properties",
+        "title": "Gradle: properties"
+      },
+      {
+        "command": "gradle.resolvableConfigurations",
+        "title": "Gradle: resolvableConfigurations"
+      },
+      {
+        "command": "gradle.tasks",
+        "title": "Gradle: tasks"
+      },
+      {
+        "command": "gradle.cleanIdea",
+        "title": "Gradle: cleanIdea"
+      },
+      {
+        "command": "gradle.idea",
+        "title": "Gradle: idea"
+      },
+      {
+        "command": "gradle.openIdea",
+        "title": "Gradle: openIdea"
+      },
+      {
+        "command": "gradle.nodeSetup",
+        "title": "Gradle: nodeSetup"
+      },
+      {
+        "command": "gradle.npmInstall",
+        "title": "Gradle: npmInstall"
+      },
+      {
+        "command": "gradle.npmSetup",
+        "title": "Gradle: npmSetup"
+      },
+      {
+        "command": "gradle.check",
+        "title": "Gradle: check"
+      },
+      {
+        "command": "gradle.integrationTest",
+        "title": "Gradle: integrationTest"
+      },
+      {
+        "command": "gradle.test",
+        "title": "Gradle: test"
+      },
+      {
+        "command": "gradle.yarn",
+        "title": "Gradle: yarn"
+      },
+      {
+        "command": "gradle.yarnSetup",
+        "title": "Gradle: yarnSetup"
+      },
+      {
+        "command": "gradle.assetClean",
+        "title": "Gradle: assetClean"
+      },
+      {
+        "command": "gradle.assetCompile",
+        "title": "Gradle: assetCompile"
+      },
+      {
+        "command": "gradle.assetPluginPackage",
+        "title": "Gradle: assetPluginPackage"
+      },
+      {
+        "command": "gradle.bootStartScripts",
+        "title": "Gradle: bootStartScripts"
+      },
+      {
+        "command": "gradle.buildProperties",
+        "title": "Gradle: buildProperties"
+      },
+      {
+        "command": "gradle.cleanIdeaModule",
+        "title": "Gradle: cleanIdeaModule"
+      },
+      {
+        "command": "gradle.cleanIdeaProject",
+        "title": "Gradle: cleanIdeaProject"
+      },
+      {
+        "command": "gradle.cleanIdeaWorkspace",
+        "title": "Gradle: cleanIdeaWorkspace"
+      },
+      {
+        "command": "gradle.compileGroovy",
+        "title": "Gradle: compileGroovy"
+      },
+      {
+        "command": "gradle.compileGroovyPages",
+        "title": "Gradle: compileGroovyPages"
+      },
+      {
+        "command": "gradle.compileGsonViews",
+        "title": "Gradle: compileGsonViews"
+      },
+      {
+        "command": "gradle.compileIntegrationTestGroovy",
+        "title": "Gradle: compileIntegrationTestGroovy"
+      },
+      {
+        "command": "gradle.compileIntegrationTestJava",
+        "title": "Gradle: compileIntegrationTestJava"
+      },
+      {
+        "command": "gradle.compileJava",
+        "title": "Gradle: compileJava"
+      },
+      {
+        "command": "gradle.compileTestGroovy",
+        "title": "Gradle: compileTestGroovy"
+      },
+      {
+        "command": "gradle.compileTestJava",
+        "title": "Gradle: compileTestJava"
+      },
+      {
+        "command": "gradle.compileWebappGroovyPages",
+        "title": "Gradle: compileWebappGroovyPages"
+      },
+      {
+        "command": "gradle.components",
+        "title": "Gradle: components"
+      },
+      {
+        "command": "gradle.console",
+        "title": "Gradle: console"
+      },
+      {
+        "command": "gradle.dbmChangelogSync",
+        "title": "Gradle: dbmChangelogSync"
+      },
+      {
+        "command": "gradle.dbmChangelogSyncSql",
+        "title": "Gradle: dbmChangelogSyncSql"
+      },
+      {
+        "command": "gradle.dbmClearChecksums",
+        "title": "Gradle: dbmClearChecksums"
+      },
+      {
+        "command": "gradle.dbmDbDoc",
+        "title": "Gradle: dbmDbDoc"
+      },
+      {
+        "command": "gradle.dbmDiff",
+        "title": "Gradle: dbmDiff"
+      },
+      {
+        "command": "gradle.dbmDropAll",
+        "title": "Gradle: dbmDropAll"
+      },
+      {
+        "command": "gradle.dbmFutureRollbackCountSql",
+        "title": "Gradle: dbmFutureRollbackCountSql"
+      },
+      {
+        "command": "gradle.dbmFutureRollbackSql",
+        "title": "Gradle: dbmFutureRollbackSql"
+      },
+      {
+        "command": "gradle.dbmGenerateChangelog",
+        "title": "Gradle: dbmGenerateChangelog"
+      },
+      {
+        "command": "gradle.dbmGenerateGormChangelog",
+        "title": "Gradle: dbmGenerateGormChangelog"
+      },
+      {
+        "command": "gradle.dbmGormDiff",
+        "title": "Gradle: dbmGormDiff"
+      },
+      {
+        "command": "gradle.dbmListLocks",
+        "title": "Gradle: dbmListLocks"
+      },
+      {
+        "command": "gradle.dbmMarkNextChangesetRan",
+        "title": "Gradle: dbmMarkNextChangesetRan"
+      },
+      {
+        "command": "gradle.dbmMarkNextChangesetRanSql",
+        "title": "Gradle: dbmMarkNextChangesetRanSql"
+      },
+      {
+        "command": "gradle.dbmPreviousChangesetSql",
+        "title": "Gradle: dbmPreviousChangesetSql"
+      },
+      {
+        "command": "gradle.dbmReleaseLocks",
+        "title": "Gradle: dbmReleaseLocks"
+      },
+      {
+        "command": "gradle.dbmRollback",
+        "title": "Gradle: dbmRollback"
+      },
+      {
+        "command": "gradle.dbmRollbackCount",
+        "title": "Gradle: dbmRollbackCount"
+      },
+      {
+        "command": "gradle.dbmRollbackCountSql",
+        "title": "Gradle: dbmRollbackCountSql"
+      },
+      {
+        "command": "gradle.dbmRollbackSql",
+        "title": "Gradle: dbmRollbackSql"
+      },
+      {
+        "command": "gradle.dbmRollbackToDate",
+        "title": "Gradle: dbmRollbackToDate"
+      },
+      {
+        "command": "gradle.dbmRollbackToDateSql",
+        "title": "Gradle: dbmRollbackToDateSql"
+      },
+      {
+        "command": "gradle.dbmStatus",
+        "title": "Gradle: dbmStatus"
+      },
+      {
+        "command": "gradle.dbmTag",
+        "title": "Gradle: dbmTag"
+      },
+      {
+        "command": "gradle.dbmUpdate",
+        "title": "Gradle: dbmUpdate"
+      },
+      {
+        "command": "gradle.dbmUpdateCount",
+        "title": "Gradle: dbmUpdateCount"
+      },
+      {
+        "command": "gradle.dbmUpdateCountSql",
+        "title": "Gradle: dbmUpdateCountSql"
+      },
+      {
+        "command": "gradle.dbmUpdateSql",
+        "title": "Gradle: dbmUpdateSql"
+      },
+      {
+        "command": "gradle.dbmValidate",
+        "title": "Gradle: dbmValidate"
+      },
+      {
+        "command": "gradle.dependentComponents",
+        "title": "Gradle: dependentComponents"
+      },
+      {
+        "command": "gradle.findMainClass",
+        "title": "Gradle: findMainClass"
+      },
+      {
+        "command": "gradle.ideaModule",
+        "title": "Gradle: ideaModule"
+      },
+      {
+        "command": "gradle.ideaProject",
+        "title": "Gradle: ideaProject"
+      },
+      {
+        "command": "gradle.ideaWorkspace",
+        "title": "Gradle: ideaWorkspace"
+      },
+      {
+        "command": "gradle.mergeTestReports",
+        "title": "Gradle: mergeTestReports"
+      },
+      {
+        "command": "gradle.model",
+        "title": "Gradle: model"
+      },
+      {
+        "command": "gradle.pathingJar",
+        "title": "Gradle: pathingJar"
+      },
+      {
+        "command": "gradle.pathingJarCommand",
+        "title": "Gradle: pathingJarCommand"
+      },
+      {
+        "command": "gradle.prepareKotlinBuildScriptModel",
+        "title": "Gradle: prepareKotlinBuildScriptModel"
+      },
+      {
+        "command": "gradle.processIntegrationTestResources",
+        "title": "Gradle: processIntegrationTestResources"
+      },
+      {
+        "command": "gradle.processResources",
+        "title": "Gradle: processResources"
+      },
+      {
+        "command": "gradle.processTestResources",
+        "title": "Gradle: processTestResources"
+      },
+      {
+        "command": "gradle.runCommand",
+        "title": "Gradle: runCommand"
+      },
+      {
+        "command": "gradle.runScript",
+        "title": "Gradle: runScript"
+      },
+      {
+        "command": "gradle.schemaExport",
+        "title": "Gradle: schemaExport"
+      },
+      {
+        "command": "gradle.shell",
+        "title": "Gradle: shell"
+      },
+      {
+        "command": "gradle.startScripts",
+        "title": "Gradle: startScripts"
+      },
+      {
+        "command": "gradle.urlMappingsReport",
+        "title": "Gradle: urlMappingsReport"
       }
     ]
   },
   "scripts": {
-    "test": "node ./test/runTest.js"
+    "vscode:prepublish": "npm run compile",
+    "compile": "node ./node_modules/vscode/bin/compile"
   },
   "devDependencies": {
-    "@types/vscode": "^1.97.0",
-    "@types/node": "^18.0.0",
-    "@types/mocha": "^10.0.10",
-    "eslint": "^8.0.0",
-    "mocha": "^10.0.0"
+    "vscode": "^1.1.37"
   }
 }
