@@ -3,7 +3,7 @@
   "displayName": "Grails & Gradle Extension",
   "description": "A VS Code extension for running Grails and Gradle tasks.",
   "version": "0.0.1",
-  "publisher": "YourPublisherName",
+  "publisher": "Lei Gao",
   "engines": {
     "vscode": "^1.60.0"
   },
