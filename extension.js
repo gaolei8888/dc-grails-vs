@@ -328,18 +328,23 @@ function spawnBuild(options) {
   // configured command line is a shell command by definition. The only user input
   // that reaches here is grails.run.command, whose whole purpose is to be the
   // command that runs.
-  // A configured command line is a shell command by definition, so it goes through
-  // a shell. The wrapper does not: it is an absolute path, and cmd.exe runs the
-  // .bat directly, which also keeps a path containing spaces intact.
+  // Both go through a shell, with the wrapper's absolute path quoted for spaces.
+  //
+  // Running cmd.exe /d /s /c with the wrapper and its arguments as separate argv
+  // entries reads better and works when the parent is a plain node process. From
+  // the extension host it does not: every build stopped dead after :findMainClass,
+  // with the application started and holding its ports and not one further line of
+  // its output ever arriving. shell:true is the form that has been seen to work in
+  // an editor, so that is the form to use. The absolute path stays -- a bare
+  // `gradlew.bat` is what cmd could not resolve to begin with.
+  //
   // detached only off Windows, and only to make the child a process group leader
-  // so killProcessTree can signal the group. The parent still waits on it.
+  // so the group can be signalled. The parent still waits on it.
   const detached = process.platform !== 'win32';
+  const quoted = process.platform === 'win32' ? '"' + wrapper + '"' : wrapper;
   const proc = commandLine
     ? spawn(commandLine, { cwd: options.cwd, shell: true, env, detached })
-    : process.platform === 'win32'
-      ? spawn('cmd.exe', ['/d', '/s', '/c', wrapper].concat(args),
-              { cwd: options.cwd, env })
-      : spawn(wrapper, args, { cwd: options.cwd, env, detached });
+    : spawn(quoted, args, { cwd: options.cwd, shell: true, env, detached });
 
   const onLine = options.onLine;
   let pending = '';
