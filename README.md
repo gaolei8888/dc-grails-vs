@@ -1,5 +1,12 @@
 # Grails & Gradle
 
+> **Pre-release.** The debugger works: breakpoints bind in .groovy files, closures
+> included, and full sessions have been driven end to end against a Grails 7.2.3
+> application. But it has been exercised on one application, on Windows, by one
+> person. Expect to find things. Known gaps are listed at the bottom; the issue
+> tracker is [on GitHub](https://github.com/gaolei8888/dc-grails-vs/issues).
+
+
 Grails and Gradle commands from the command palette and a sidebar tree — and a
 debugger that can actually stop on a line of Groovy.
 
