@@ -4,6 +4,12 @@
 
 ### Added
 
+- **Grails: Debug Tests**, which runs `gradlew test --debug-jvm` and attaches to
+  the test JVM. Spock specs could not be debugged at all before. The spec in the
+  active editor is offered as the `--tests` filter, since a whole run stopping on
+  the first breakpoint in a shared helper is not what you want when you are
+  looking at one failure.
+
 - **Exception breakpoints**, caught and uncaught, from the Breakpoints section of
   the Run and Debug view. Filtered by the same rule as stepping -- the throw site
   has to be in a file under the project's source roots -- because a Grails request

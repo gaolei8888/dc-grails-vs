@@ -191,6 +191,10 @@
         "title": "Grails: Debug App"
       },
       {
+        "command": "grails.debugTests",
+        "title": "Grails: Debug Tests"
+      },
+      {
         "command": "grails.stopDebug",
         "title": "Grails: Stop Debug App"
       },

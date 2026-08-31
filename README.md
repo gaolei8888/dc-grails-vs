@@ -57,6 +57,14 @@ configuration:
 }
 ```
 
+## Debugging tests
+
+**Grails: Debug Tests** runs `gradlew test --debug-jvm` and attaches to the test
+JVM, which is the same machinery the application uses -- Gradle forks it with the
+same agent on the same port and announces it on the same stream. It offers the
+spec in the active editor as the filter, so debugging the failure you are looking
+at is one command; leave the box empty to debug the whole run.
+
 ## Commands
 
 199 Grails and Gradle commands are registered. The ones people reach for are in

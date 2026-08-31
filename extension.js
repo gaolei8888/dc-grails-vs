@@ -584,6 +584,7 @@ const COMMAND_TREE = [
     label: 'Run', icon: 'play-circle', items: [
       { label: 'Run App', command: 'grails.runApp', icon: 'play' },
       { label: 'Debug App', command: 'grails.debug', icon: 'debug-alt' },
+      { label: 'Debug Tests', command: 'grails.debugTests', icon: 'beaker' },
       { label: 'Stop App', command: 'grails.stopApp', icon: 'debug-stop' },
       { label: 'Stop Debug App', command: 'grails.stopDebug', icon: 'debug-stop' }
     ]
@@ -806,6 +807,27 @@ function createStatusBar(context) {
   refreshStatusBar();
 }
 
+/**
+ * The fully qualified name of the spec in the active editor, for the test filter.
+ *
+ * A guess, offered as the default rather than used silently: the package comes
+ * from the file's own package line, which is where it is reliable, and the class
+ * from the file name, which is the convention every Grails test follows.
+ */
+function currentSpecName() {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    return '';
+  }
+  const file = editor.document.fileName;
+  if (!/(Spec|Test)\.(groovy|java)$/.test(file)) {
+    return '';
+  }
+  const base = path.basename(file).replace(/\.(groovy|java)$/, '');
+  const match = /^\s*package\s+([\w.]+)/m.exec(editor.document.getText());
+  return match ? match[1] + '.' + base : base;
+}
+
 function activate(context) {
   // The debug adapter that makes .groovy breakpoints bind at all. Registered
   // unconditionally so a hand-written launch.json of type "groovy" works whether
@@ -879,7 +901,18 @@ function activate(context) {
   });
 
   // 3) Grails (Gradle): Debug App
-  const debugGrailsAppCommand = vscode.commands.registerCommand('grails.debug', async () => {
+  /**
+   * Starts a Gradle task under a debugger and attaches to it.
+   *
+   * Shared by the application and the tests, which differ only in the task: both
+   * fork a JVM with --debug-jvm and announce the same port on the same stream.
+   *
+   * @param {object} spec
+   * @param {string[]} spec.args        gradle arguments, without --debug-jvm
+   * @param {string} spec.channelName   output channel for the build
+   * @param {string} spec.starting      what to say while it starts
+   */
+  const startDebugSession = async spec => {
     if (gradleDebugProcess) {
       vscode.window.showWarningMessage('A Grails debug process is already running.');
       return;
@@ -907,7 +940,7 @@ function activate(context) {
       return;
     }
 
-    vscode.window.showInformationMessage('Starting Grails in debug mode...');
+    vscode.window.showInformationMessage(spec.starting);
 
     let attached = false;
     let giveUp = null;
@@ -962,10 +995,10 @@ function activate(context) {
       || (debugSettings.command ? `${debugSettings.command} --debug-jvm` : '');
 
     gradleDebugProcess = spawnBuild({
-      args: ['bootRun', '--debug-jvm'].concat(debugSettings.extraArgs),
+      args: spec.args.concat(['--debug-jvm'], debugSettings.extraArgs),
       commandLine: debugCommandLine,
       cwd: workspaceFolder,
-      channelName: 'Grails - Debug',
+      channelName: spec.channelName,
       onLine: line => {
         noteOutputLine(line);
         const m = JDWP_READY_RE.exec(line);
@@ -994,6 +1027,37 @@ function activate(context) {
       vscode.window.showInformationMessage(`Grails debug process exited with code ${code}`);
       gradleDebugProcess = null;
       refreshStatusBar();
+    });
+  };
+
+  const debugGrailsAppCommand = vscode.commands.registerCommand('grails.debug', () =>
+    startDebugSession({
+      args: ['bootRun'],
+      channelName: 'Grails - Debug',
+      starting: 'Starting Grails in debug mode...'
+    }));
+
+  // Debugging a Spock spec is the same machinery with a different task. --tests
+  // narrows it to one class, because a whole test run stopping on the first
+  // breakpoint in a shared helper is not what anyone wants when they are looking
+  // at one failure.
+  const debugTestsCommand = vscode.commands.registerCommand('grails.debugTests', async () => {
+    const pattern = await vscode.window.showInputBox({
+      prompt: 'Test class or pattern to debug (empty runs them all)',
+      placeHolder: 'dapspike.SpikeServiceSpec, or *ServiceSpec, or blank',
+      value: currentSpecName()
+    });
+    if (pattern === undefined) {
+      return; // dismissed
+    }
+    const args = ['test'];
+    if (pattern.trim()) {
+      args.push('--tests', pattern.trim());
+    }
+    return startDebugSession({
+      args,
+      channelName: 'Grails - Test Debug',
+      starting: 'Starting tests in debug mode...'
     });
   });
 
@@ -1248,6 +1312,7 @@ function activate(context) {
     runAppGradleCommand,
     stopAppGradleCommand,
     debugGrailsAppCommand,
+    debugTestsCommand,
     stopDebugGrailsCommand
   );
 }
