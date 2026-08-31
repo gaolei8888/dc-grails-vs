@@ -526,12 +526,15 @@ function refreshStatusBar() {
     statusState.text = `$(check) Grails ${grailsAppUrl.replace(/^https?:\/\//, '')}`;
     statusState.tooltip = `${grailsAppUrl} -- click to open`;
     statusState.command = 'grails.openApp';
+    statusState.color = new vscode.ThemeColor('charts.green');
   } else {
     // A spinning icon rather than a claim: the build may still be compiling, and
     // it may yet fail without the app ever coming up.
     statusState.text = debugging ? '$(sync~spin) Grails starting (debug)' : '$(sync~spin) Grails starting';
     statusState.tooltip = 'Waiting for the application to report that it is running';
     statusState.command = undefined;
+    // No colour while starting: it has not succeeded yet, and it may not.
+    statusState.color = undefined;
   }
   statusState.show();
 
@@ -543,20 +546,30 @@ function refreshStatusBar() {
 function createStatusBar(context) {
   // Right-aligned, high priority so the pair stays together and near the left of
   // that group rather than drifting between other extensions' items.
+  // Green for the things that start something, red for the thing that stops it,
+  // the way a run toolbar reads everywhere else. ThemeColor rather than a literal
+  // so it tracks the theme; the status bar only allows a foreground colour, its
+  // background being restricted to the error and warning ones.
+  const GREEN = new vscode.ThemeColor('charts.green');
+  const RED = new vscode.ThemeColor('charts.red');
+
   statusRun = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusRun.text = '$(play) Grails';
   statusRun.tooltip = 'Grails: Run App';
   statusRun.command = 'grails.runApp';
+  statusRun.color = GREEN;
 
   statusDebug = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
   statusDebug.text = '$(debug-alt) Debug';
   statusDebug.tooltip = 'Grails: Debug App';
   statusDebug.command = 'grails.debug';
+  statusDebug.color = GREEN;
 
   statusState = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
 
   statusStop = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 97);
   statusStop.tooltip = 'Stop the running Grails app';
+  statusStop.color = RED;
 
   context.subscriptions.push(statusRun, statusDebug, statusState, statusStop);
   refreshStatusBar();
