@@ -1,9 +1,79 @@
 const vscode = require('vscode');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 
 // Dedicated processes for long‑running tasks (runApp and debug)
 let gradleRunProcess = null;
 let gradleDebugProcess = null;
+
+// The JVM prints this once the JDWP agent is actually listening. Waiting for it
+// is the only reliable attach trigger -- a fixed delay races Gradle's configure
+// and compile phases, which routinely take far longer than any delay you'd pick.
+const JDWP_READY_RE = /Listening for transport dt_socket at address:\s*(\d+)/;
+
+// How long to wait for that line before giving up (cold start + full compile).
+const JDWP_WAIT_MS = 300000;
+
+function gradleWrapper() {
+  return process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+}
+
+function requireWorkspace(what) {
+  if (!vscode.workspace.workspaceFolders) {
+    vscode.window.showErrorMessage(`No workspace folder found. Open your ${what} first.`);
+    return null;
+  }
+  return vscode.workspace.workspaceFolders[0].uri.fsPath;
+}
+
+/**
+ * spawn() the Gradle wrapper and stream its output into a channel.
+ *
+ * Deliberately NOT exec(): child_process.exec buffers the whole output in memory
+ * and kills the child once it exceeds maxBuffer (1 MB by default). A Grails app
+ * blows past that in minutes, so the server would die on its own with an error
+ * that points nowhere near the cause. spawn() streams and has no such limit.
+ *
+ * @param {string[]} args        arguments for the wrapper (fixed literals only)
+ * @param {string} cwd           working directory
+ * @param {string} channelName   output channel to create/show
+ * @param {(line: string) => void} [onLine]  called for each complete stdout line
+ */
+function spawnGradle(args, cwd, channelName, onLine) {
+  const channel = vscode.window.createOutputChannel(channelName);
+  channel.show(true);
+  channel.appendLine(`> ${gradleWrapper()} ${args.join(' ')}\n`);
+
+  // shell:true so the .bat wrapper resolves on Windows. Safe here because every
+  // argument is a hard-coded literal, never user input.
+  const proc = spawn(gradleWrapper(), args, { cwd, shell: true });
+
+  let pending = '';
+  const pump = chunk => {
+    const text = chunk.toString();
+    channel.append(text);
+    if (!onLine) return;
+    pending += text;
+    const lines = pending.split(/\r?\n/);
+    pending = lines.pop();
+    lines.forEach(onLine);
+  };
+  proc.stdout.on('data', pump);
+  proc.stderr.on('data', pump);
+  proc.on('error', err => {
+    channel.appendLine(`\n[failed to start] ${err.message}`);
+    vscode.window.showErrorMessage(`Could not run ${gradleWrapper()}: ${err.message}`);
+  });
+  return proc;
+}
+
+/**
+ * grails.debug currently hands the session to vscode-java-debug (type: 'java').
+ * That extension is not a hard dependency of this one, so say so plainly instead
+ * of letting startDebugging() fail with an opaque error.
+ */
+function javaDebugAvailable() {
+  return !!vscode.extensions.getExtension('vscjava.vscode-java-debug');
+}
 
 /**
  * Helper function to run any Grails/Gradle command via the Gradle wrapper.
@@ -58,13 +128,7 @@ function activate(context) {
     }
     const workspaceFolder = vscode.workspace.workspaceFolders[0].uri.fsPath;
     vscode.window.showInformationMessage('Starting Grails app (normal mode)...');
-    const gradleCmd = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
-    // Use grailsCommand with "run-app"
-    gradleRunProcess = exec(`${gradleCmd} bootRun`, { cwd: workspaceFolder });
-    const outputChannel = vscode.window.createOutputChannel('Grails - Normal');
-    outputChannel.show(true);
-    gradleRunProcess.stdout.on('data', data => outputChannel.append(data.toString()));
-    gradleRunProcess.stderr.on('data', data => outputChannel.append(data.toString()));
+    gradleRunProcess = spawnGradle(['bootRun'], workspaceFolder, 'Grails - Normal');
     gradleRunProcess.on('close', code => {
       vscode.window.showInformationMessage(`Grails (normal) exited with code ${code}`);
       gradleRunProcess = null;
@@ -93,34 +157,67 @@ function activate(context) {
       return;
     }
     const workspaceFolder = vscode.workspace.workspaceFolders[0].uri.fsPath;
+
+    if (!javaDebugAvailable()) {
+      const pick = await vscode.window.showErrorMessage(
+        'Debugging needs the "Debugger for Java" extension (vscjava.vscode-java-debug), which is not installed.',
+        'Show extension'
+      );
+      if (pick === 'Show extension') {
+        vscode.commands.executeCommand('workbench.extensions.search', 'vscjava.vscode-java-debug');
+      }
+      return;
+    }
+
     vscode.window.showInformationMessage('Starting Grails in debug mode...');
-    const gradleCmd = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
-    // Run in debug mode by passing "run-app --debug-jvm" to grailsCommand
-    gradleDebugProcess = exec(`${gradleCmd} bootRun --debug-jvm`, { cwd: workspaceFolder });
-    const debugChannel = vscode.window.createOutputChannel('Grails - Debug');
-    debugChannel.show(true);
-    gradleDebugProcess.stdout.on('data', data => debugChannel.append(data.toString()));
-    gradleDebugProcess.stderr.on('data', data => debugChannel.append(data.toString()));
-    gradleDebugProcess.on('close', code => {
-      vscode.window.showInformationMessage(`Grails debug process exited with code ${code}`);
-      gradleDebugProcess = null;
-    });
-    // (Optional) Auto-attach the Java debugger after a short delay
-    setTimeout(async () => {
-      const debugConfig = {
-        name: 'Attach to Grails',
-        type: 'java',
-        request: 'attach',
-        hostName: 'localhost',
-        port: 5005 // default debug port for --debug-jvm
-      };
+
+    let attached = false;
+    let giveUp = null;
+    const attach = async port => {
+      if (attached) return;
+      attached = true;
+      clearTimeout(giveUp);
       try {
-        await vscode.debug.startDebugging(undefined, debugConfig);
-        vscode.window.showInformationMessage('Debugger attached to Grails on port 5005.');
+        await vscode.debug.startDebugging(undefined, {
+          name: 'Attach to Grails',
+          type: 'java',
+          request: 'attach',
+          hostName: 'localhost',
+          port
+        });
+        vscode.window.showInformationMessage(`Debugger attached to Grails on port ${port}.`);
       } catch (err) {
         vscode.window.showErrorMessage(`Failed to attach debugger: ${err.message}`);
       }
-    }, 3000);
+    };
+
+    // Attach only once the JVM says it is listening. A fixed setTimeout races
+    // Gradle's configure + compile phases, which on a cold start run well past
+    // any delay you would pick -- the old 3s version failed most cold starts.
+    gradleDebugProcess = spawnGradle(
+      ['bootRun', '--debug-jvm'],
+      workspaceFolder,
+      'Grails - Debug',
+      line => {
+        const m = JDWP_READY_RE.exec(line);
+        if (m) attach(Number(m[1]));
+      }
+    );
+
+    giveUp = setTimeout(() => {
+      if (attached) return;
+      attached = true;
+      vscode.window.showErrorMessage(
+        `Gave up waiting for the JVM to open its debug port after ${JDWP_WAIT_MS / 1000}s. ` +
+        'See the "Grails - Debug" output channel.'
+      );
+    }, JDWP_WAIT_MS);
+
+    gradleDebugProcess.on('close', code => {
+      clearTimeout(giveUp);
+      vscode.window.showInformationMessage(`Grails debug process exited with code ${code}`);
+      gradleDebugProcess = null;
+    });
   });
 
   // 4) Grails (Gradle): Stop Debug App
