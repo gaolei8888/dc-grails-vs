@@ -81,6 +81,20 @@ Attach configurations also take `sourcePaths` (roots for resolving stack frames,
 defaulted from the project layout), `stepFilters` (packages to step over),
 `stepIntoProjectCodeOnly` and `trace`.
 
+## Stopping
+
+Stop reaches the application, not just the build. Gradle forks the app from its
+daemon, and the daemon is reused between builds, so the app is only sometimes a
+descendant of the process this extension started — killing that process tree
+leaves the app running about as often as not, holding the debug port and 8080.
+Stop kills the tree and, separately, whatever JVM is listening on the ports the
+app announced.
+
+Debug App also checks the debug port before starting. If something already holds
+it, it says what, and offers to stop it — because a JVM that cannot open its debug
+port produces a build that stops after `:findMainClass` and prints nothing at all,
+which is indistinguishable from a hang.
+
 ## Known issues
 
 - **Step over from the middle of a line overshoots.** After a call returns you are

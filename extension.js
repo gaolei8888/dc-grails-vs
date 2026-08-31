@@ -1,5 +1,5 @@
 const vscode = require('vscode');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -135,6 +135,143 @@ function outputChannel(name) {
 
 /** The channel a running app is logging to, for "show me the log". */
 let activeChannelName = null;
+
+/** The port `bootRun --debug-jvm` opens. Gradle hard-codes it. */
+const DEBUG_PORT = 5005;
+
+/**
+ * What is listening on a TCP port, if anything.
+ *
+ * The app cannot be found through the process tree. Gradle forks it from the
+ * daemon, and the daemon is reused across builds -- so when this build started a
+ * daemon of its own the app is inside our tree and a tree kill reaches it, and
+ * when it reused one from an earlier build the app hangs off a process we never
+ * started and the tree kill leaves it running. Measured: pid 61828, the app, had
+ * the daemon 19528 as its parent, while other daemons on the same machine
+ * descended from launchers long gone.
+ *
+ * The port is the reliable handle. We know the debug port because Gradle fixes
+ * it, and the HTTP port because the application prints it.
+ */
+function portHolder(port) {
+  try {
+    if (process.platform === 'win32') {
+      const netstat = spawnSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8' });
+      // Columns, not a pattern built from the port: a regex assembled by string
+      // concatenation needs its backslashes escaped twice over and silently
+      // matches nothing when one of them is lost. netstat's rows are
+      //   Proto  Local Address  Foreign Address  State  PID
+      const suffix = ':' + port;
+      let pid = 0;
+      for (const row of (netstat.stdout || '').split('\n')) {
+        const parts = row.trim().split(/\s+/);
+        if (parts.length >= 5 && parts[3] === 'LISTENING' && parts[1].endsWith(suffix)) {
+          pid = Number(parts[4]);
+          break;
+        }
+      }
+      if (!Number.isInteger(pid) || pid <= 0) {
+        return null;
+      }
+      const tasklist = spawnSync('tasklist',
+        ['/FI', 'PID eq ' + pid, '/FO', 'CSV', '/NH'], { encoding: 'utf8' });
+      const match = /^"([^"]+)"/.exec((tasklist.stdout || '').trim());
+      return { pid, name: match ? match[1] : 'unknown' };
+    }
+    const lsof = spawnSync('lsof',
+      ['-nP', '-iTCP:' + port, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' });
+    const pid = Number((lsof.stdout || '').trim().split('\n')[0]);
+    if (!Number.isInteger(pid) || pid <= 0) {
+      return null;
+    }
+    const ps = spawnSync('ps', ['-p', String(pid), '-o', 'comm='], { encoding: 'utf8' });
+    return { pid, name: (ps.stdout || '').trim() || 'unknown' };
+  } catch (err) {
+    return null; // failing to diagnose is not a reason to fail the command
+  }
+}
+function killPid(pid) {
+  try {
+    if (process.platform === 'win32') {
+      spawnSync('taskkill', ['/pid', String(pid), '/T', '/F']);
+    } else {
+      process.kill(pid, 'SIGKILL');
+    }
+  } catch (err) {
+    // already gone
+  }
+}
+
+/**
+ * Kills the application listening on a port, if it is a JVM.
+ *
+ * The name is checked because these ports are not ours by right: something else
+ * may be on 8080, and killing a stranger's process is worse than leaving ours.
+ */
+function killJvmOnPort(port) {
+  if (!port) {
+    return;
+  }
+  const holder = portHolder(port);
+  if (holder && /^java(\.exe)?$/i.test(holder.name)) {
+    killPid(holder.pid);
+  }
+}
+
+/** The HTTP port of the running app, from the URL it announced. */
+function appPort() {
+  if (!grailsAppUrl) {
+    return null;
+  }
+  const match = /:(\d+)/.exec(grailsAppUrl);
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * Everything a stop has to reach: the build we spawned, and the application,
+ * which may not be underneath it.
+ */
+function stopEverything(proc, includeDebugPort) {
+  killProcessTree(proc);
+  killJvmOnPort(appPort());
+  if (includeDebugPort) {
+    killJvmOnPort(DEBUG_PORT);
+  }
+}
+
+/**
+ * Asks about a debug port that is already taken, and returns whether to proceed.
+ *
+ * Never kills anything by itself. The holder is usually an earlier run of this
+ * app that outlived the editor, but it may be something else entirely, and a
+ * debugger that silently stops other people's processes is worse than one that
+ * fails to start.
+ */
+async function ensureDebugPortFree() {
+  const holder = portHolder(DEBUG_PORT);
+  if (!holder) {
+    return true;
+  }
+  const stop = 'Stop ' + holder.name + ' (' + holder.pid + ')';
+  const choice = await vscode.window.showWarningMessage(
+    'Port ' + DEBUG_PORT + ' is already in use by ' + holder.name + ', pid '
+    + holder.pid + '. The JVM cannot open its debug port, and the build stops '
+    + 'after :findMainClass without reporting anything.',
+    stop, 'Start anyway', 'Cancel');
+  if (choice !== stop) {
+    return choice === 'Start anyway';
+  }
+  killPid(holder.pid);
+  for (let i = 0; i < 20 && portHolder(DEBUG_PORT); i++) {
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  if (portHolder(DEBUG_PORT)) {
+    vscode.window.showErrorMessage(
+      'Port ' + DEBUG_PORT + ' is still in use. Nothing was started.');
+    return false;
+  }
+  return true;
+}
 
 /**
  * spawn() a build and stream its output into a channel.
@@ -665,7 +802,7 @@ function activate(context) {
       return;
     }
     vscode.window.showInformationMessage('Stopping Grails app (normal mode)...');
-    killProcessTree(gradleRunProcess);
+    stopEverything(gradleRunProcess, false);
     gradleRunProcess = null;
     refreshStatusBar();
   });
@@ -692,6 +829,10 @@ function activate(context) {
       if (pick === 'Show extension') {
         vscode.commands.executeCommand('workbench.extensions.search', 'vscjava.vscode-java-debug');
       }
+      return;
+    }
+
+    if (!await ensureDebugPortFree()) {
       return;
     }
 
@@ -773,7 +914,7 @@ function activate(context) {
       return;
     }
     vscode.window.showInformationMessage('Stopping Grails debug process...');
-    killProcessTree(gradleDebugProcess);
+    stopEverything(gradleDebugProcess, true);
     gradleDebugProcess = null;
     refreshStatusBar();
   });
@@ -1023,11 +1164,11 @@ function activate(context) {
 
 function deactivate() {
   if (gradleRunProcess) {
-    killProcessTree(gradleRunProcess);
+    stopEverything(gradleRunProcess, false);
     gradleRunProcess = null;
   }
   if (gradleDebugProcess) {
-    killProcessTree(gradleDebugProcess);
+    stopEverything(gradleDebugProcess, true);
     gradleDebugProcess = null;
   }
 }

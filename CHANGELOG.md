@@ -33,8 +33,16 @@
 - **Debug attached on a three second timer**, which loses to Gradle's configure and
   compile phases on a cold start. It now waits for the JVM to report that it is
   listening, and takes the port from that line.
-- **Stop left the application running.** Gradle forks the app into a JVM of its
-  own, which kept the debug port and 8080; the whole process tree is stopped now.
+- **Stop left the application running.** Gradle forks the app from its daemon, and
+  the daemon is reused between builds -- so the app descends from the process this
+  extension started only when that build happened to start a fresh daemon, and
+  killing the process tree left it running the rest of the time, holding the debug
+  port and 8080. Measured: the app JVM's parent was the daemon, whose own parent
+  was a launcher from an earlier build. Stop now kills the tree and, separately,
+  whatever JVM holds the ports the app announced.
+- **Debug App checks the debug port first.** A JVM that cannot open it produces a
+  build that stops after `:findMainClass` and prints nothing, which reads as a
+  hang. It now says what holds the port and offers to stop it.
 - Builds streamed through `exec` were killed once their output passed 1 MB, which a
   Grails log reaches in minutes.
 - Dismissing the argument prompt no longer runs the command anyway.
