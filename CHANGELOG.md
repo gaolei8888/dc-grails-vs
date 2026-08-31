@@ -1,5 +1,13 @@
 # Change Log
 
+## 0.1.1 — pre-release
+
+### Fixed
+
+- An empty console window opened in front of the editor on every run. Sending the
+  build's output to a file rather than a pipe means Windows allocates a console
+  for it, and spawn does not hide one by default.
+
 ## 0.1.0 — pre-release
 
 ### Added

@@ -354,11 +354,15 @@ function spawnBuild(options) {
 
   const detached = process.platform !== 'win32';
   const quoted = process.platform === 'win32' ? '"' + wrapper + '"' : wrapper;
+  // windowsHide, because spawn does not hide it by default and this is a console
+  // program: with the output on pipes Windows gave it no console, but once stdout
+  // and stderr are file handles it allocates one, and an empty black window pops
+  // up in front of the editor on every run.
+  const options2 = { cwd: options.cwd, shell: true, env, detached,
+    windowsHide: true, stdio: ['ignore', logFd, logFd] };
   const proc = commandLine
-    ? spawn(commandLine, { cwd: options.cwd, shell: true, env, detached,
-        stdio: ['ignore', logFd, logFd] })
-    : spawn(quoted, args, { cwd: options.cwd, shell: true, env, detached,
-        stdio: ['ignore', logFd, logFd] });
+    ? spawn(commandLine, options2)
+    : spawn(quoted, args, options2);
 
   const onLine = options.onLine;
   let readAt = 0;
