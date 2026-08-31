@@ -535,11 +535,45 @@ server/
    `org.springframework.{transaction,aop,cglib}.*`。整份 filter 可由 attach 参数
    `stepFilters` 覆盖。
 
-**遗留(未解释)**:从 `SpikeController.index:9` 再 `next`,落点不是同一方法的第 10 行,而是
-`org.grails.core.DefaultGrailsControllerClass$ReflectionInvoker.invoke:215` —— 即直接跨出了
-controller 帧。`javap -l` 显示 `index()` 的行号表干净且单路径(8/9/10/11,无双代码路径),所以
-现有的解释都不成立。**这是 T1 的待查项,不要当成已知行为。** 下一步应在 spike 里把每次 step
-落点的 bci 与帧深度都打出来。
+#### 遗留缺陷:从「行中段」发起的 step over 会冲出整个方法体
+
+已用 `trace: true`(attach 参数,把每个 step 事件的 **bci 与帧深度**都打出来)把边界条件夹出来了。
+
+**不出问题**——断点直接下在 controller 上,从那里连续 `next`:
+
+```
+STOP 1 index:8  bci 59  depth 56      (断点)
+       index:9  bci 87  depth 56
+       index:10 bci 115 depth 56
+       index:11 bci 140 depth 56
+       → 方法结束,出到 ReflectionInvoker:215 depth 51
+```
+
+**出问题**——先在 service 的 `$tt__` 方法里停下,一路 `next` 到方法末行,靠**自动续步**穿过
+无行号的事务回调回到 controller:
+
+```
+$tt__transactionalMethod:29 bci 174 depth 88
+  (自动续步: closure2 bci 38/40 depth 75 → transactionalMethod bci 69/72 depth 61
+            → transactionalMethod$0.call bci 22 depth 60)
+STOP  index:9  bci 104 depth 56       ← 第 9 行的「中段」
+  next → ReflectionInvoker.invoke:215 depth 51    ← 跳过了第 10、11 行
+```
+
+**差别只有落点的 bci**:正常那次是 **bci 87**(第 9 行的起点),出问题那次是 **bci 104**
+(第 9 行的中段 —— 调用刚返回、`astore_3` 还没执行;`javap` 显示第 9 行覆盖 bci 87–114,
+第 10 行从 115 开始)。`index()` 的行号表干净且单路径,不是双代码路径的问题。
+
+**结论**:在**一行的中段**创建的 `STEP_OVER` 请求会冲出整个方法体,而在**行首**创建的正常。
+从被调用方法返回时落在行中段是所有调试器的常态,所以这条不是我们的用法问题。怀疑与
+JDI class exclusion filter 的实现方式有关(bci 104 之后紧接着就是
+`ScriptBytecodeAdapter.castToType`,落在 `org.codehaus.groovy.*` 排除项里),但**未证实** ——
+把 filter 全部去掉的对照实验没能复现,因为没有 filter 时单步会逐帧爬过反射管道
+(depth 88→86→85→84→83→82…),10 步都回不到 controller。
+
+**影响**:step over 走到方法末行、返回调用方之后,再按一次会跳过调用方该行之后的剩余代码。
+**未修**。下一步应该试:检测「当前位置不是所在行的第一个 bci」,此时改用别的策略
+(例如先发一个不带 exclusion filter 的 `STEP_MIN`,把位置推到行首,再发正常的 `STEP_OVER`)。
 
 **extension 侧接线**:`package.json` 加了 `contributes.breakpoints`(language `groovy`,
 **没有这一条 VSCode 根本不允许在 .groovy 上打断点**)、`contributes.debuggers`(type `groovy`)
@@ -551,8 +585,8 @@ controller 帧。`javap -l` 显示 `index()` 的行号表干净且单路径(8/9/
 
 1. **编辑器里没跑过** —— 上面全部是脚本驱动的验证。Extension Development Host 里的实际
    体验(断点图标、变量面板渲染、单步手感)未验。
-2. **`next` 已实机验证(见上方「单步」),但 `stepIn` / `stepOut` 仍只经过编译**;且从 controller
-   行再 step over 会跨出 controller 帧,原因未查明。
+2. **`next` 已实机验证(见上方「单步」),但 `stepIn` / `stepOut` 仍只经过编译**;且有一个已
+   定位、未修的缺陷:**从行中段发起的 step over 会冲出整个方法体**(见上方「遗留缺陷」)。
 3. `evaluate` / 条件断点 —— 属 T2。
 4. 多 `EventSet` 并发命中(多线程同时停)的行为未验。
 

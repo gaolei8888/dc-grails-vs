@@ -93,6 +93,32 @@
     "configuration": {
       "title": "Grails & Gradle",
       "properties": {
+        "grails.run.command": {
+          "type": "string",
+          "default": "",
+          "description": "Command line to start the app, instead of the Gradle wrapper. Use this when the project starts through a wrapper script that exports the environment the app needs (a run_dev.sh and the like); running gradlew directly loses all of it."
+        },
+        "grails.run.debugCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Command line for Grails: Debug App. Defaults to grails.run.command with --debug-jvm appended, which works for a wrapper that ends in `exec ./gradlew bootRun \"$@\"`."
+        },
+        "grails.run.env": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Environment variables to add for the app process. Merged over the environment VSCode itself was started with."
+        },
+        "grails.run.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra arguments appended to the Gradle wrapper for bootRun. Ignored when grails.run.command is set."
+        },
         "grails.debug.adapter": {
           "type": "string",
           "enum": [

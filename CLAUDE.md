@@ -102,16 +102,38 @@ attach 模式下不需要解析 Groovy:`ReferenceType.locationsOfLine(n)` 就是
 - 编译与运行都需要 `--add-modules jdk.jdi`(该模块不在默认根模块集合中)
 - **要发布到 Marketplace** —— 因此 vsix 体积是真实约束,且 `publisher` 必须换成合法 id
 
-## 已知缺陷(与断点无关,可顺手修)
+## 已知缺陷
 
-1. **`extension.js:108` 的 `setTimeout(..., 3000)` 是竞态** —— 冷启动时 Gradle 配置+编译远超
-   3 秒,JVM 还没开始监听,attach 失败。应盯 stdout 等
-   `Listening for transport dt_socket at address: 5005` 出现再 attach。
-2. **`extension.js:99` 的 `exec` 应换成 `spawn`** —— `child_process.exec` 的 `maxBuffer` 默认
-   1 MB,超限**直接杀掉子进程**。Grails 日志几分钟就顶破,服务会莫名其妙死掉且报错不指向此处。
-3. **环境变量不透传** —— 很多 Grails 项目用包装脚本(`run_dev.sh` 之类,通常就是
-   `exec ./gradlew bootRun "$@"`)来 export 应用需要的环境变量,扩展直接 `exec gradlew` 会全丢。
-   应支持配置自定义启动命令,或在设置里声明要注入的 env。
+### 已修(2026-08-30)
+
+1. ~~`setTimeout(..., 3000)` 竞态~~ —— 改为盯 stdout 等
+   `Listening for transport dt_socket at address: <port>` 出现再 attach,端口也从该行取。
+   加了「只认第一次」的守卫:`server=y` 的 JDWP agent 在调试器断开后会**再打印一遍**这行。
+2. ~~`exec` 应换成 `spawn`~~ —— `runApp` / `debug` / 那 199 条命令全部改用 `spawn`,不再受
+   `maxBuffer` 默认 1 MB 的限制(超限会**直接杀掉子进程**)。
+3. ~~环境变量不透传~~ —— 新增设置 `grails.run.command` / `grails.run.debugCommand`
+   (自定义启动命令行,给 `run_dev.sh` 这类包装脚本用)、`grails.run.env`(注入的环境变量)、
+   `grails.run.args`(附加给 bootRun 的参数)。
+4. ~~**199 条命令一条都没真正执行**~~ —— helper 拼的是 `gradlew -Pargs="<name>"`,
+   **完全没有任务名**;`-P` 只设项目属性,Gradle 于是回落到默认任务(未配置即 `help`)。
+   已按名字形态分流:带连字符的是 Grails CLI 命令(`create-controller` 等),走插件的
+   `runCommand` 任务 + `-Pargs="<命令行>"`;其余是真正的 Gradle 任务名,直接作为任务传。
+   顺带:输入框按 Esc 取消现在会中止,以前会照跑。
+
+   **已在 Grails 7.2.3 上实测**(`--dry-run`):老形式 `gradlew -Pargs="build"` 只跑出
+   `:help SKIPPED`;新形式 `gradlew build` 展开完整构建图,`gradlew runCommand
+   -Pargs="create-controller Foo"` 解析到 `:runCommand`。
+
+**注意:第 1–3 条只做到语法检查通过,没有在编辑器里实跑过。** 第 4 条的命令行形态已在真实
+Grails 项目上验过,但同样没有从 VSCode UI 走过一遍。
+
+### 未修
+
+- **`publisher` 字段 `"Lei Gao"` 含空格,不是合法的 marketplace publisher id** —— 发布前必须
+  换成你注册的 id(需要你提供)。仓库名与 marketplace id 是两回事,`package.json` 的
+  `"name": "grails-gradle-extension"` 才是发布标识。
+- `devDependencies` 只声明了废弃的 `vscode: ^1.1.37`,而实际装的是 eslint / vscode-test;
+  `node_modules/eslint/` 包目录缺失,`npx eslint` 直接 MODULE_NOT_FOUND。
 
 ## 开发
 

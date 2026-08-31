@@ -1,5 +1,5 @@
 const vscode = require('vscode');
-const { exec, spawn } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -28,27 +28,73 @@ function requireWorkspace(what) {
 }
 
 /**
- * spawn() the Gradle wrapper and stream its output into a channel.
+ * How the app is started.
+ *
+ * Plenty of Grails projects do not start through gradlew directly but through a
+ * wrapper script that first exports what the app needs -- run_dev.sh and friends,
+ * usually little more than `exec ./gradlew bootRun "$@"` behind a pile of export
+ * lines. Running gradlew ourselves drops every one of those silently, and the
+ * failure then surfaces deep inside the application instead of here. So both the
+ * command and a set of variables to inject are configurable.
+ */
+function launchSettings() {
+  const config = vscode.workspace.getConfiguration('grails');
+  return {
+    command: (config.get('run.command', '') || '').trim(),
+    debugCommand: (config.get('run.debugCommand', '') || '').trim(),
+    env: config.get('run.env', {}) || {},
+    extraArgs: config.get('run.args', []) || []
+  };
+}
+
+/** The parent environment plus the configured additions. */
+function childEnvironment(extra) {
+  const env = Object.assign({}, process.env);
+  for (const key of Object.keys(extra)) {
+    env[key] = String(extra[key]);
+  }
+  return env;
+}
+
+/**
+ * spawn() a build and stream its output into a channel.
  *
  * Deliberately NOT exec(): child_process.exec buffers the whole output in memory
  * and kills the child once it exceeds maxBuffer (1 MB by default). A Grails app
  * blows past that in minutes, so the server would die on its own with an error
  * that points nowhere near the cause. spawn() streams and has no such limit.
  *
- * @param {string[]} args        arguments for the wrapper (fixed literals only)
- * @param {string} cwd           working directory
- * @param {string} channelName   output channel to create/show
- * @param {(line: string) => void} [onLine]  called for each complete stdout line
+ * @param {object} options
+ * @param {string[]} [options.args]       arguments for the Gradle wrapper
+ * @param {string} [options.commandLine]  a configured command line, used instead
+ * @param {string} options.cwd            working directory
+ * @param {string} options.channelName    output channel to create/show
+ * @param {(line: string) => void} [options.onLine]  called per complete stdout line
  */
-function spawnGradle(args, cwd, channelName, onLine) {
-  const channel = vscode.window.createOutputChannel(channelName);
+function spawnBuild(options) {
+  const args = options.args || [];
+  const commandLine = options.commandLine || '';
+  const settings = launchSettings();
+  const env = childEnvironment(settings.env);
+
+  const channel = vscode.window.createOutputChannel(options.channelName);
   channel.show(true);
-  channel.appendLine(`> ${gradleWrapper()} ${args.join(' ')}\n`);
+  channel.appendLine('> ' + (commandLine || gradleWrapper() + ' ' + args.join(' ')));
+  const injected = Object.keys(settings.env);
+  if (injected.length > 0) {
+    channel.appendLine('  (with grails.run.env: ' + injected.join(', ') + ')');
+  }
+  channel.appendLine('');
 
-  // shell:true so the .bat wrapper resolves on Windows. Safe here because every
-  // argument is a hard-coded literal, never user input.
-  const proc = spawn(gradleWrapper(), args, { cwd, shell: true });
+  // shell:true either way: on Windows the wrapper is a .bat that needs one, and a
+  // configured command line is a shell command by definition. The only user input
+  // that reaches here is grails.run.command, whose whole purpose is to be the
+  // command that runs.
+  const proc = commandLine
+    ? spawn(commandLine, { cwd: options.cwd, shell: true, env })
+    : spawn(gradleWrapper(), args, { cwd: options.cwd, shell: true, env });
 
+  const onLine = options.onLine;
   let pending = '';
   const pump = chunk => {
     const text = chunk.toString();
@@ -63,7 +109,8 @@ function spawnGradle(args, cwd, channelName, onLine) {
   proc.stderr.on('data', pump);
   proc.on('error', err => {
     channel.appendLine(`\n[failed to start] ${err.message}`);
-    vscode.window.showErrorMessage(`Could not run ${gradleWrapper()}: ${err.message}`);
+    vscode.window.showErrorMessage(
+      `Could not run ${commandLine || gradleWrapper()}: ${err.message}`);
   });
   return proc;
 }
@@ -153,37 +200,56 @@ const groovyConfigurationProvider = {
 };
 
 /**
+ * Builds the Gradle invocation for one command.
+ *
+ * A hyphenated name is a Grails CLI command, not a Gradle task. Grails' own
+ * commands -- create-controller, dbm-update, s2-quickstart -- have no Gradle task
+ * of their own; the Grails Gradle plugin exposes them through a `runCommand` task
+ * that takes the whole command line in -Pargs. Everything else in the two lists
+ * is a real task name and is passed as one.
+ *
+ * The previous version passed neither: it ran `gradlew -Pargs="<name>"`, which
+ * sets a project property and names no task at all, so Gradle fell back to its
+ * default task and none of the 199 commands did what its title said.
+ */
+function gradleArgsFor(commandName, extraArgs) {
+  const extra = (extraArgs || '').trim();
+  if (commandName.includes('-')) {
+    const payload = extra ? `${commandName} ${extra}` : commandName;
+    // One argument containing spaces, so it has to carry its own quotes. Double
+    // quotes inside are dropped rather than escaped: cmd.exe and POSIX shells
+    // disagree about how to escape them, and no Grails command needs one.
+    return ['runCommand', `-Pargs="${payload.replace(/"/g, '')}"`];
+  }
+  return extra ? [commandName].concat(extra.split(/\s+/)) : [commandName];
+}
+
+/**
  * Helper function to run any Grails/Gradle command via the Gradle wrapper.
  * @param {string} commandName - The command to run (e.g. "clean", "bootRun", etc.).
  * @param {boolean} promptForArgs - Whether to prompt the user for additional arguments.
  */
 function runGrailsCommandViaGradle(commandName, promptForArgs = true) {
-  if (!vscode.workspace.workspaceFolders) {
-    vscode.window.showErrorMessage('No workspace folder found. Open your project first.');
+  const workspaceFolder = requireWorkspace('Grails/Gradle project');
+  if (!workspaceFolder) {
     return;
   }
-  const workspaceFolder = vscode.workspace.workspaceFolders[0].uri.fsPath;
-  const gradleCmd = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
 
-  let argsPromise = Promise.resolve("");
-  if (promptForArgs) {
-    argsPromise = vscode.window.showInputBox({
-      prompt: `Enter additional arguments for: ${commandName} (optional)`
-    });
-  }
+  const argsPromise = promptForArgs
+    ? Promise.resolve(vscode.window.showInputBox({
+        prompt: `Enter additional arguments for: ${commandName} (optional)`
+      }))
+    : Promise.resolve('');
 
   argsPromise.then(extraArgs => {
-    let fullArgs = commandName;
-    if (extraArgs && extraArgs.trim().length > 0) {
-      fullArgs += " " + extraArgs;
+    if (extraArgs === undefined) {
+      return; // input box dismissed -- do not run the command anyway
     }
-    // Build the Gradle command using the grailsCommand task pattern.
-    const fullCmd = `${gradleCmd} -Pargs="${fullArgs}"`;
-    const outputChannel = vscode.window.createOutputChannel(`Gradle: ${commandName}`);
-    outputChannel.show(true);
-    const proc = exec(fullCmd, { cwd: workspaceFolder });
-    proc.stdout.on('data', data => outputChannel.append(data.toString()));
-    proc.stderr.on('data', data => outputChannel.append(data.toString()));
+    const proc = spawnBuild({
+      args: gradleArgsFor(commandName, extraArgs),
+      cwd: workspaceFolder,
+      channelName: `Gradle: ${commandName}`
+    });
     proc.on('close', code => {
       vscode.window.showInformationMessage(`Task '${commandName}' exited with code ${code}`);
     });
@@ -213,7 +279,13 @@ function activate(context) {
     }
     const workspaceFolder = vscode.workspace.workspaceFolders[0].uri.fsPath;
     vscode.window.showInformationMessage('Starting Grails app (normal mode)...');
-    gradleRunProcess = spawnGradle(['bootRun'], workspaceFolder, 'Grails - Normal');
+    const runSettings = launchSettings();
+    gradleRunProcess = spawnBuild({
+      args: ['bootRun'].concat(runSettings.extraArgs),
+      commandLine: runSettings.command,
+      cwd: workspaceFolder,
+      channelName: 'Grails - Normal'
+    });
     gradleRunProcess.on('close', code => {
       vscode.window.showInformationMessage(`Grails (normal) exited with code ${code}`);
       gradleRunProcess = null;
@@ -286,15 +358,23 @@ function activate(context) {
     // Attach only once the JVM says it is listening. A fixed setTimeout races
     // Gradle's configure + compile phases, which on a cold start run well past
     // any delay you would pick -- the old 3s version failed most cold starts.
-    gradleDebugProcess = spawnGradle(
-      ['bootRun', '--debug-jvm'],
-      workspaceFolder,
-      'Grails - Debug',
-      line => {
+    const debugSettings = launchSettings();
+    // A wrapper script ending in `exec ./gradlew bootRun "$@"` forwards extra
+    // arguments, so appending --debug-jvm to grails.run.command is the useful
+    // default; grails.run.debugCommand overrides it when it is not.
+    const debugCommandLine = debugSettings.debugCommand
+      || (debugSettings.command ? `${debugSettings.command} --debug-jvm` : '');
+
+    gradleDebugProcess = spawnBuild({
+      args: ['bootRun', '--debug-jvm'].concat(debugSettings.extraArgs),
+      commandLine: debugCommandLine,
+      cwd: workspaceFolder,
+      channelName: 'Grails - Debug',
+      onLine: line => {
         const m = JDWP_READY_RE.exec(line);
         if (m) attach(Number(m[1]));
       }
-    );
+    });
 
     giveUp = setTimeout(() => {
       if (attached) return;

@@ -95,6 +95,7 @@ public final class DebugSession {
     private volatile boolean configured;
 
     private List<String> stepExcludes = DEFAULT_STEP_EXCLUDES;
+    private boolean trace;
     private final Map<Long, Integer> stepDepths = new ConcurrentHashMap<>();
     private final Map<Long, Integer> restepBudget = new ConcurrentHashMap<>();
 
@@ -171,6 +172,7 @@ public final class DebugSession {
         vm = attachWithRetry(host, port, timeoutMs);
         binder = new BreakpointBinder(vm, this::log, this::sendBreakpointChanged);
         sources = new SourceLocator(strings(args.get("sourcePaths")));
+        trace = Boolean.TRUE.equals(args.get("trace"));
         List<String> configuredExcludes = strings(args.get("stepFilters"));
         if (!configuredExcludes.isEmpty()) {
             stepExcludes = configuredExcludes;
@@ -473,6 +475,7 @@ public final class DebugSession {
         } catch (Exception e) {
             depth = -1;
         }
+        traceLocation("breakpoint", thread, event.location());
         if (!deduper.shouldReport(thread, event.location(), depth)) {
             // The other half of a line Groovy compiled twice; see StopDeduper.
             return null;
@@ -486,6 +489,7 @@ public final class DebugSession {
     private Runnable onStepDone(StepEvent event) {
         vm.eventRequestManager().deleteEventRequest(event.request());
         ThreadReference thread = event.thread();
+        traceLocation("step", thread, event.location());
 
         if (event.location().lineNumber() < 0 && keepStepping(thread)) {
             // Generated code with no line number table -- the callback that
@@ -501,6 +505,27 @@ public final class DebugSession {
         variables.reset();
         deduper.forget(thread);
         return () -> sendStopped("step", thread, new ArrayList<>());
+    }
+
+    /**
+     * Every stop the VM reports, before any of it is filtered. Off by default and
+     * enabled with {@code "trace": true} in the attach arguments -- the bci and the
+     * frame depth are what distinguish "the same line again" from "a different code
+     * path for the same line", and neither is visible in the DAP messages.
+     */
+    private void traceLocation(String kind, ThreadReference thread, Location location) {
+        if (!trace) {
+            return;
+        }
+        int depth;
+        try {
+            depth = thread.frameCount();
+        } catch (Exception e) {
+            depth = -1;
+        }
+        log(String.format("%s event: %s.%s line %d bci %d depth %d thread %s",
+                kind, location.declaringType().name(), location.method().name(),
+                location.lineNumber(), location.codeIndex(), depth, safeThreadName(thread)));
     }
 
     /** @return false once a single user step has re-stepped too many times. */
