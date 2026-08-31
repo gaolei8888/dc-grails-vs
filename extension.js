@@ -361,7 +361,7 @@ const COMMAND_TREE = [
     ]
   },
   {
-    label: 'Create', icon: 'new-file', items: [
+    label: 'Create (empty)', icon: 'new-file', items: [
       { label: 'Controller', command: 'grails.create-controller' },
       { label: 'Domain Class', command: 'grails.create-domain-class' },
       { label: 'Service', command: 'grails.create-service' },
@@ -373,11 +373,14 @@ const COMMAND_TREE = [
     ]
   },
   {
-    label: 'Generate', icon: 'sparkle', items: [
-      { label: 'All', command: 'grails.generate-all' },
-      { label: 'Controller', command: 'grails.generate-controller' },
+    // Not a duplicate of Create. create-* makes an empty artefact; generate-*
+    // scaffolds one from a domain class that already exists, actions and all. The
+    // labels say so, because "Controller" under both groups does not.
+    label: 'Scaffold from domain class', icon: 'sparkle', items: [
+      { label: 'Controller + views', command: 'grails.generate-all' },
+      { label: 'Controller only', command: 'grails.generate-controller' },
       { label: 'Service', command: 'grails.generate-service' },
-      { label: 'Views', command: 'grails.generate-views' }
+      { label: 'Views only', command: 'grails.generate-views' }
     ]
   },
   {
@@ -466,26 +469,75 @@ function refreshGrailsContext() {
 // tree, which is for actions that take an argument.
 let statusRun = null;
 let statusDebug = null;
+let statusState = null;
 let statusStop = null;
+
+/** Where the app said it is listening, once it says so. */
+let grailsAppUrl = null;
+
+/**
+ * The line Grails prints when the application is actually serving, and Boot's
+ * equivalent for a project that does not print the first one.
+ *
+ * Worth watching because "a build is running" and "the app is up" are different
+ * states and the gap between them is a cold Gradle configure plus a compile. A
+ * button that reads the same throughout tells you nothing about which one you are
+ * in.
+ */
+const APP_READY_RE = /Grails application running at (\S+)/;
+const TOMCAT_READY_RE = /Tomcat started on port\(?s?\)?:?\s*(\d+)/;
+
+function noteOutputLine(line) {
+  if (grailsAppUrl) {
+    return;
+  }
+  const grails = APP_READY_RE.exec(line);
+  if (grails) {
+    grailsAppUrl = grails[1];
+    refreshStatusBar();
+    return;
+  }
+  const tomcat = TOMCAT_READY_RE.exec(line);
+  if (tomcat) {
+    grailsAppUrl = `http://localhost:${tomcat[1]}`;
+    refreshStatusBar();
+  }
+}
 
 function refreshStatusBar() {
   if (!statusRun) {
     return;
   }
-  const busy = !!gradleRunProcess || !!gradleDebugProcess;
-  if (busy) {
-    statusRun.hide();
-    statusDebug.hide();
-    statusStop.text = gradleDebugProcess
-      ? '$(debug-stop) Stop Grails (debug)'
-      : '$(debug-stop) Stop Grails';
-    statusStop.command = gradleDebugProcess ? 'grails.stopDebug' : 'grails.stopApp';
-    statusStop.show();
-  } else {
+  const debugging = !!gradleDebugProcess;
+  const busy = !!gradleRunProcess || debugging;
+  if (!busy) {
+    grailsAppUrl = null;
+    statusState.hide();
     statusStop.hide();
     statusRun.show();
     statusDebug.show();
+    return;
   }
+
+  statusRun.hide();
+  statusDebug.hide();
+
+  if (grailsAppUrl) {
+    statusState.text = `$(check) Grails ${grailsAppUrl.replace(/^https?:\/\//, '')}`;
+    statusState.tooltip = `${grailsAppUrl} -- click to open`;
+    statusState.command = 'grails.openApp';
+  } else {
+    // A spinning icon rather than a claim: the build may still be compiling, and
+    // it may yet fail without the app ever coming up.
+    statusState.text = debugging ? '$(sync~spin) Grails starting (debug)' : '$(sync~spin) Grails starting';
+    statusState.tooltip = 'Waiting for the application to report that it is running';
+    statusState.command = undefined;
+  }
+  statusState.show();
+
+  statusStop.text = '$(debug-stop) Stop';
+  statusStop.command = debugging ? 'grails.stopDebug' : 'grails.stopApp';
+  statusStop.show();
 }
 
 function createStatusBar(context) {
@@ -501,10 +553,12 @@ function createStatusBar(context) {
   statusDebug.tooltip = 'Grails: Debug App';
   statusDebug.command = 'grails.debug';
 
-  statusStop = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
+  statusState = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
+
+  statusStop = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 97);
   statusStop.tooltip = 'Stop the running Grails app';
 
-  context.subscriptions.push(statusRun, statusDebug, statusStop);
+  context.subscriptions.push(statusRun, statusDebug, statusState, statusStop);
   refreshStatusBar();
 }
 
@@ -519,6 +573,14 @@ function activate(context) {
   );
   createStatusBar(context);
   refreshGrailsContext();
+
+  // Not contributed to the palette: it only makes sense as the status bar item's
+  // click target, and only while the app is up.
+  context.subscriptions.push(vscode.commands.registerCommand('grails.openApp', () => {
+    if (grailsAppUrl) {
+      vscode.env.openExternal(vscode.Uri.parse(grailsAppUrl));
+    }
+  }));
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(refreshGrailsContext));
 
@@ -541,7 +603,8 @@ function activate(context) {
       args: ['bootRun'].concat(runSettings.extraArgs),
       commandLine: runSettings.command,
       cwd: workspaceFolder,
-      channelName: 'Grails - Normal'
+      channelName: 'Grails - Normal',
+      onLine: noteOutputLine
     });
     if (!gradleRunProcess) {
       return; // spawnBuild already said what was wrong
@@ -634,6 +697,7 @@ function activate(context) {
       cwd: workspaceFolder,
       channelName: 'Grails - Debug',
       onLine: line => {
+        noteOutputLine(line);
         const m = JDWP_READY_RE.exec(line);
         if (m) attach(Number(m[1]));
       }
