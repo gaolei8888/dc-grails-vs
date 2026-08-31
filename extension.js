@@ -1,5 +1,7 @@
 const vscode = require('vscode');
 const { exec, spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 // Dedicated processes for long‑running tasks (runApp and debug)
 let gradleRunProcess = null;
@@ -67,13 +69,88 @@ function spawnGradle(args, cwd, channelName, onLine) {
 }
 
 /**
- * grails.debug currently hands the session to vscode-java-debug (type: 'java').
+ * With grails.debug.adapter set to 'java' the session goes to vscode-java-debug.
  * That extension is not a hard dependency of this one, so say so plainly instead
  * of letting startDebugging() fail with an opaque error.
  */
 function javaDebugAvailable() {
   return !!vscode.extensions.getExtension('vscjava.vscode-java-debug');
 }
+
+/** 'groovy' (this extension's adapter) or 'java' (vscode-java-debug). */
+function debugAdapterType() {
+  return vscode.workspace.getConfiguration('grails').get('debug.adapter', 'groovy');
+}
+
+/**
+ * The java to run the debug adapter with. It needs 17 or later, and it is not
+ * necessarily the one VSCode itself runs on.
+ */
+function javaExecutable() {
+  const configured = vscode.workspace.getConfiguration('grails').get('debug.javaPath', '');
+  if (configured) return configured;
+  const home = process.env.JAVA_HOME;
+  if (home) {
+    const candidate = path.join(home, 'bin', process.platform === 'win32' ? 'java.exe' : 'java');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return 'java';
+}
+
+/**
+ * Where to look for the .groovy files behind a stack frame. The JVM reports a
+ * frame's source as a package-relative path, so the adapter only needs the roots
+ * those paths hang off -- for Grails, the artefact directories.
+ */
+function defaultSourcePaths(workspaceFolder) {
+  const candidates = [
+    'grails-app/controllers', 'grails-app/services', 'grails-app/domain',
+    'grails-app/init', 'grails-app/utils', 'grails-app/jobs', 'grails-app/taglib',
+    'src/main/groovy', 'src/main/java', 'src/test/groovy'
+  ];
+  return candidates
+    .map(relative => path.join(workspaceFolder, relative))
+    .filter(candidate => fs.existsSync(candidate));
+}
+
+/**
+ * Starts the Groovy debug adapter -- a JVM of its own, because JDI is a Java API
+ * and there is no way to speak it from Node.
+ *
+ * jdk.jdi is not in the default root module set, so without --add-modules the
+ * adapter starts and then fails to find com.sun.jdi at all.
+ */
+function makeAdapterFactory(context) {
+  return {
+    createDebugAdapterDescriptor() {
+      const jar = context.asAbsolutePath(path.join('dist', 'groovy-dap.jar'));
+      if (!fs.existsSync(jar)) {
+        vscode.window.showErrorMessage(
+          `The Groovy debug adapter is missing (${jar}). Run "npm run build:server".`);
+        return undefined;
+      }
+      return new vscode.DebugAdapterExecutable(
+        javaExecutable(), ['--add-modules', 'jdk.jdi', '-jar', jar]);
+    }
+  };
+}
+
+/** Fills in the parts of a launch.json entry a user should not have to write. */
+const groovyConfigurationProvider = {
+  resolveDebugConfiguration(folder, config) {
+    if (!config.type) {
+      // Started from the Run view with no launch.json at all.
+      config.type = 'groovy';
+      config.request = 'attach';
+      config.name = 'Attach to Grails (Groovy)';
+      config.port = 5005;
+    }
+    if (!config.sourcePaths && folder) {
+      config.sourcePaths = defaultSourcePaths(folder.uri.fsPath);
+    }
+    return config;
+  }
+};
 
 /**
  * Helper function to run any Grails/Gradle command via the Gradle wrapper.
@@ -114,6 +191,14 @@ function runGrailsCommandViaGradle(commandName, promptForArgs = true) {
 }
 
 function activate(context) {
+  // The debug adapter that makes .groovy breakpoints bind at all. Registered
+  // unconditionally so a hand-written launch.json of type "groovy" works whether
+  // or not the app was started through this extension.
+  context.subscriptions.push(
+    vscode.debug.registerDebugAdapterDescriptorFactory('groovy', makeAdapterFactory(context)),
+    vscode.debug.registerDebugConfigurationProvider('groovy', groovyConfigurationProvider)
+  );
+
   // ===== Dedicated Commands for Running the App (Grails-specific) =====
 
   // 1) Grails (Gradle): Run App (Normal Mode)
@@ -158,9 +243,11 @@ function activate(context) {
     }
     const workspaceFolder = vscode.workspace.workspaceFolders[0].uri.fsPath;
 
-    if (!javaDebugAvailable()) {
+    const adapterType = debugAdapterType();
+    if (adapterType === 'java' && !javaDebugAvailable()) {
       const pick = await vscode.window.showErrorMessage(
-        'Debugging needs the "Debugger for Java" extension (vscjava.vscode-java-debug), which is not installed.',
+        'grails.debug.adapter is set to "java", which needs the "Debugger for Java" extension '
+        + '(vscjava.vscode-java-debug). It is not installed.',
         'Show extension'
       );
       if (pick === 'Show extension') {
@@ -178,14 +265,19 @@ function activate(context) {
       attached = true;
       clearTimeout(giveUp);
       try {
-        await vscode.debug.startDebugging(undefined, {
+        // type 'groovy' is this extension's adapter; 'java' hands the session to
+        // vscode-java-debug, which cannot bind breakpoints in .groovy files
+        // because it resolves class names through JDT. Kept as an escape hatch.
+        await vscode.debug.startDebugging(vscode.workspace.workspaceFolders[0], {
           name: 'Attach to Grails',
-          type: 'java',
+          type: adapterType,
           request: 'attach',
           hostName: 'localhost',
-          port
+          port,
+          sourcePaths: defaultSourcePaths(workspaceFolder)
         });
-        vscode.window.showInformationMessage(`Debugger attached to Grails on port ${port}.`);
+        vscode.window.showInformationMessage(
+          `Debugger attached to Grails on port ${port} (${adapterType} adapter).`);
       } catch (err) {
         vscode.window.showErrorMessage(`Failed to attach debugger: ${err.message}`);
       }

@@ -74,13 +74,21 @@ attach 模式下不需要解析 Groovy:`ReferenceType.locationsOfLine(n)` 就是
    (`doCall(TransactionStatus)`,无行号表)。§4 算法靠 `locationsOfLine()` 为空自动排除,
    不需要认名字;但靠类名做启发式的实现会翻车。
 
-### 下一步:开 `server/` 进 T1
+### T1 进行中:`server/` 已建并跑通(2026-08-30)
 
-生死线已过,路线**已定:自写 DAP server,不 fork `microsoft/java-debug`**(2026-08-30,
-理由见文档 §10 已决表)。
+路线**已定:自写 DAP server,不 fork `microsoft/java-debug`**(理由见文档 §10 已决表)。
 
-T1 = 最小 DAP server(约 15 个 DAP 请求 + 6 类事件),见文档 §7 的 T1 小节,其中列了 4 个坑与
-2 条补充验收。
+`server/` = Java 17、**零第三方依赖**、产物 `dist/groovy-dap.jar` 约 44 KB。16 个 DAP 请求
+和 6 类事件已实现;断点绑定、签名行下滑、闭包补装、命中去重、`Reference` 解包、栈帧回映射
+都在空白 Grails 7.2.3 应用上用脚本驱动的 DAP 客户端验过。详见文档 **§7.3**。
+
+`dist/` 是构建产物,已 gitignore。**F5 之前先 `npm run build:server`**,否则 adapter 不存在。
+
+**T1 余项**(文档 §7.3 末尾有完整列表):
+
+1. **编辑器里没跑过** —— 全部验证都是脚本驱动的,Extension Development Host 里的实际体验未验。
+2. **单步未实机验证** —— `next`/`stepIn`/`stepOut` 已实现并带 step filter,但只经过编译。
+3. `evaluate` / 条件断点属 T2。
 
 ### 已定的架构决策
 
@@ -109,10 +117,17 @@ T1 = 最小 DAP server(约 15 个 DAP 请求 + 6 类事件),见文档 §7 的 T1
 
 ```bash
 pnpm install
+npm run build:server   # 必须:构建 dist/groovy-dap.jar,否则调试 adapter 起不来
 # F5 启动 Extension Development Host
-pnpm test          # .vscode-test.mjs
+pnpm test              # .vscode-test.mjs
 npx eslint .
 ```
+
+`server/` 自带 gradle wrapper(8.14.3),用 JDK 17 构建。编译和运行都需要
+`--add-modules jdk.jdi` —— 该模块不在默认根模块集合里。
+
+注意:本机 `node_modules` 是坏的 —— `.bin/eslint` 在但 `node_modules/eslint/` 包目录不存在
+(pnpm 软链没建成),`npx eslint` 直接 MODULE_NOT_FOUND。重装一次即可。
 
 发布前注意:`publisher` 字段现值 `"Lei Gao"` 含空格,不是合法的 marketplace publisher id,
 需换成注册的 id。仓库名与 marketplace id 是两回事,后者是 `package.json` 的 `name` 字段。

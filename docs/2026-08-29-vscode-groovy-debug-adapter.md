@@ -459,6 +459,68 @@ pause / disconnect / evaluate(可选)
 - **方法签名行**要么明确报"不可绑定",要么"向下吸附到第一条可执行行"。
 - **变量面板要解包 `groovy.lang.Reference`**(被闭包捕获的局部变量都是这个形态),不只是过滤合成变量。
 
+### 7.3 T1 实现现状(2026-08-30)
+
+`server/` 已建,Java 17,**零第三方依赖**,产物 `dist/groovy-dap.jar` 约 44 KB。
+
+```
+server/
+  build.gradle                     jar 直接落到 ../dist/,vsix 从那里取
+  src/main/java/org/groovydap/
+    Main.java                      stdio 入口。把 System.out 换成 stderr ——
+                                   stdout 是协议通道,一条 println 就能把客户端搞错位
+    DebugSession.java              DAP 请求分发 + JDI 事件循环
+    dap/Json.java                  够用的 JSON 读写(不引 Gson:vsix 体积)
+    dap/DapTransport.java          Content-Length 分帧,按字节读,send 加锁
+    jdi/SourceRef.java             文件 → 类名前缀 + 「这行有没有可执行代码」
+    jdi/BreakpointBinder.java      §4 算法
+    jdi/StopDeduper.java           §7.2 ① 的命中侧去重
+    jdi/Variables.java             Reference 解包 / 合成变量过滤 / 装箱值展开
+    jdi/SourceLocator.java         栈帧 → 源文件(反向映射,本来就是通的)
+```
+
+**已实现的 DAP 请求**:`initialize` / `attach` / `setBreakpoints` /
+`setExceptionBreakpoints`(空实现)/ `configurationDone` / `threads` / `stackTrace` /
+`scopes` / `variables` / `continue` / `next` / `stepIn` / `stepOut` / `pause` /
+`disconnect` / `terminate`。事件:`initialized` / `stopped` / `continued` /
+`breakpoint` / `terminated` / `output`。
+
+**实机验证**(空白 Grails 7.2.3 应用 + 一个照着 VSCode 说话的 DAP 客户端脚本,非编辑器):
+
+| 验的东西 | 结果 |
+|---|---|
+| attach + `configurationDone` 放行 `suspend=y` 的目标 | 通过 |
+| 方法签名行 19 / 33 自动下滑到 20 / 34 | 通过,响应里带 `message` 说明移动原因 |
+| 闭包行 23、嵌套闭包行 25 在类加载后补装并发 `breakpoint changed` | 通过 |
+| 一次调用只停一次(§7.2 ① 的去重) | 通过 |
+| 栈帧回映射到 `.groovy` 文件 | 通过 |
+| `groovy.lang.Reference` 解包 + 装箱值显示 | 通过(`base = 0` 而非 `Integer (id=…)`) |
+
+停顿序列 20 → 23 → 25 → 25 → 23 → 25 → 25 → 23,与源码循环结构完全吻合。
+
+**去重踩到的一个坑**(已修):两条源码行 snap 到同一行时,同一 location 上会有**两个**
+`BreakpointRequest`,JDI 把它们放进**同一个 `EventSet`**。原先的去重器在抑制时把记录删了,
+于是同一个 set 里的第二个事件又被当成新停顿放行 —— 行 20 停了两次。现在(a)一个 `EventSet`
+只认第一个断点事件,(b)抑制时**保留**记录:下一次调用会在**同一个 bci** 重新进入,这正是
+区分「同一次调用的后半段」和「新的一次调用」的依据。
+
+**extension 侧接线**:`package.json` 加了 `contributes.breakpoints`(language `groovy`,
+**没有这一条 VSCode 根本不允许在 .groovy 上打断点**)、`contributes.debuggers`(type `groovy`)
+和两个设置(`grails.debug.adapter` 默认 `groovy`,`grails.debug.javaPath`);`extension.js`
+注册 `DebugAdapterDescriptorFactory`,用 `java --add-modules jdk.jdi -jar dist/groovy-dap.jar`
+拉起,并用 `DebugConfigurationProvider` 自动填 `sourcePaths`。
+
+**还没做的 T1 余项**:
+
+1. **编辑器里没跑过** —— 上面全部是脚本驱动的验证。Extension Development Host 里的实际
+   体验(断点图标、变量面板渲染、单步手感)未验。
+2. **单步没有实机验证** —— `next`/`stepIn`/`stepOut` 已实现并带 step filter
+   (`org.codehaus.groovy.*`、`groovy.lang.*`、`java.lang.invoke.*`、反射系列),但只经过编译,
+   没在 Grails 上跑过。§7 T1 坑 ③ 说的两条不同调用路径(invokedynamic vs metaclass)是否都被
+   filter 盖住,要实测。
+3. `evaluate` / 条件断点 —— 属 T2。
+4. 多 `EventSet` 并发命中(多线程同时停)的行为未验。
+
 ### T2 — 好用(再 2~4 周)
 
 - **条件断点** —— 需在目标 VM 内求值 Groovy 表达式。最省事的路子是把表达式编成闭包后在目标 VM 里 `invokeMethod`。**这是最大的一块。**

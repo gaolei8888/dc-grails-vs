@@ -8,3 +8,9 @@ vsc-extension-quickstart.md
 **/*.map
 **/eslint.config.mjs
 **/.vscode-test.*
+
+# The adapter ships as dist/groovy-dap.jar; its sources and build tree do not.
+server/**
+scripts/**
+docs/**
+CLAUDE.md

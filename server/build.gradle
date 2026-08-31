@@ -1,0 +1,39 @@
+// The Groovy debug adapter.
+//
+// Deliberately dependency-free: the DAP wire format is JSON over stdio, and a
+// few hundred lines of parser cost less than shading a JSON library into a jar
+// that ships inside a vsix. See docs/2026-08-29-vscode-groovy-debug-adapter.md.
+plugins {
+    id 'java'
+}
+
+group = 'org.groovydap'
+version = '0.1.0'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+// jdk.jdi is not in the default root module set, so it has to be requested
+// explicitly both here and on the launch command line (see extension.js).
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += ['--add-modules', 'jdk.jdi']
+    options.encoding = 'UTF-8'
+}
+
+jar {
+    archiveFileName = 'groovy-dap.jar'
+    manifest {
+        attributes 'Main-Class': 'org.groovydap.Main'
+    }
+}
+
+// The vsix ships dist/groovy-dap.jar; keep the build output where the
+// extension expects to find it.
+tasks.register('installJar', Copy) {
+    from tasks.jar
+    into rootProject.file('../dist')
+}
+tasks.named('build') { finalizedBy 'installJar' }

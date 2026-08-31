@@ -11,6 +11,7 @@
     "Other"
   ],
   "activationEvents": [
+    "onDebugResolve:groovy"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -21,6 +22,97 @@
           "aliases": [ "Groovy", "grails" ]
         }
       ],
+    "breakpoints": [
+      {
+        "language": "groovy"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "groovy",
+        "label": "Groovy (attach)",
+        "languages": [
+          "groovy"
+        ],
+        "configurationAttributes": {
+          "attach": {
+            "required": [
+              "port"
+            ],
+            "properties": {
+              "hostName": {
+                "type": "string",
+                "description": "Host the target JVM is listening on.",
+                "default": "localhost"
+              },
+              "port": {
+                "type": "number",
+                "description": "JDWP port. Grails' bootRun --debug-jvm uses 5005.",
+                "default": 5005
+              },
+              "timeout": {
+                "type": "number",
+                "description": "How long to keep retrying the attach, in milliseconds.",
+                "default": 30000
+              },
+              "sourcePaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Roots to resolve stack frames against. Defaults to the Grails artefact directories of the workspace folder.",
+                "default": []
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "groovy",
+            "request": "attach",
+            "name": "Attach to Grails (Groovy)",
+            "hostName": "localhost",
+            "port": 5005
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Groovy: attach to a running JVM",
+            "description": "Binds breakpoints in .groovy files, closures included.",
+            "body": {
+              "type": "groovy",
+              "request": "attach",
+              "name": "Attach to Grails (Groovy)",
+              "hostName": "localhost",
+              "port": 5005
+            }
+          }
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "Grails & Gradle",
+      "properties": {
+        "grails.debug.adapter": {
+          "type": "string",
+          "enum": [
+            "groovy",
+            "java"
+          ],
+          "enumDescriptions": [
+            "This extension's own adapter. Binds breakpoints in .groovy files.",
+            "Hand the session to vscjava.vscode-java-debug. Breakpoints in .groovy files stay unbound."
+          ],
+          "default": "groovy",
+          "description": "Which debug adapter Grails: Debug App attaches with."
+        },
+        "grails.debug.javaPath": {
+          "type": "string",
+          "default": "",
+          "description": "java executable used to run the Groovy debug adapter. Defaults to JAVA_HOME, then whatever is on PATH. Java 17 or later."
+        }
+      }
+    },
     "commands": [
       {
         "command": "grails.runApp",
@@ -821,8 +913,10 @@
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "node ./node_modules/vscode/bin/compile"
+    "vscode:prepublish": "npm run build:server",
+    "build:server": "node scripts/build-server.js",
+    "lint": "eslint .",
+    "test": "vscode-test"
   },
   "devDependencies": {
     "vscode": "^1.1.37"

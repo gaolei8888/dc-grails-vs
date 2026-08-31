@@ -1,3 +1,8 @@
 node_modules
 .vscode-test/
 *.vsix
+
+# Built by scripts/build-server.js from server/
+dist/
+server/build/
+server/.gradle/
