@@ -14,3 +14,11 @@ server/**
 scripts/**
 docs/**
 CLAUDE.md
+
+# Nothing here is a runtime dependency -- extension.js requires only the vscode
+# API and Node built-ins -- so none of it belongs in the vsix. vsce would
+# otherwise ship the lot, because the packages actually installed are not the
+# ones package.json declares as devDependencies and it cannot tell them apart.
+node_modules/**
+pnpm-lock.yaml
+.npmrc
