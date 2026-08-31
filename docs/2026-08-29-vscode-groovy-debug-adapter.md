@@ -652,6 +652,7 @@ index:8 (断点) → index:8 → index:9 → index:9 → index:10 → SpikeServi
 | 变量面板 | `seed = 4`、`base = 0` —— `Reference` 解包与装箱值渲染正常 |
 | **单个请求的总停顿次数** | **4 次**(第 20 行 1 次 + 第 23 行 3 次)。第 20 行有 bci 20/79 两处,**去重生效**;若失效应是 5 次 |
 | 多线程同时命中 | 通过 —— 两个并发请求各自停在第 20 行,Call Stack 分别显示 `http-nio-8080-exec-9/-10`,互不干扰 |
+| step over(F10) | 通过 —— 与 §7.3 的 harness 结果一致 |
 
 #### 编辑器暴露、harness 暴露不了的四个缺陷(均已修)
 
@@ -671,8 +672,7 @@ index:8 (断点) → index:8 → index:9 → index:9 → index:10 → SpikeServi
 
 **还没做的 T1 余项**:
 
-1. **编辑器里的单步手感未验** —— `next`/`stepIn` 的行为已在 harness 上验过(§7.3),但没在
-   Extension Development Host 里按过 F10/F11。
+1. `stepIn` / `stepOut` 在编辑器里没按过(step over 已验)。`stepOut` 连 harness 都没验过。
 2. **`next` 与 `stepIn` 已实机验证,`stepOut` 仍只经过编译**;有一个已定位、未修的缺陷:
    **从行中段发起的 step over 会冲出整个方法体**(见上方「遗留缺陷」);`stepIn` 步不进
    `@Transactional` 方法(见上方「step filter」)。
