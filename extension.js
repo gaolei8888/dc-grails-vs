@@ -367,6 +367,9 @@ function spawnBuild(options) {
   const onLine = options.onLine;
   let readAt = 0;
   let pending = '';
+  // Held-back tail of a colour escape that a read split down the middle, so the
+  // stripper below never sees half a sequence and lets the rest through as text.
+  let escHold = '';
 
   const drain = () => {
     let text = '';
@@ -387,6 +390,24 @@ function spawnBuild(options) {
     } catch (err) {
       return; // the file may not exist yet
     }
+    if (!text) {
+      return;
+    }
+    // The OutputChannel is not a terminal: it renders no ANSI, so every colour
+    // code Grails emits would show up as literal text (a red ESC block followed
+    // by `[0;39m`). Boot colours its log through `%clr` regardless of stdout
+    // being a plain file here, so the only reliable fix is to strip on this side.
+    text = escHold + text;
+    escHold = '';
+    const split = text.match(/\x1b(?:\[[0-9;]*)?$/);
+    if (split) {
+      escHold = split[0];
+      text = text.slice(0, -split[0].length);
+    }
+    text = text
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC (window titles)
+      .replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, '')          // CSI (colour, cursor)
+      .replace(/\x1b[@-Z\\-_]/g, '');                      // two-char escapes
     if (!text) {
       return;
     }
@@ -755,7 +776,6 @@ function refreshStatusBar() {
     statusState.text = `$(check) Grails ${grailsAppUrl.replace(/^https?:\/\//, '')}`;
     statusState.tooltip = `${grailsAppUrl} -- click to open`;
     statusState.command = 'grails.openApp';
-    statusState.color = debugging ? undefined : new vscode.ThemeColor('charts.green');
   } else {
     // A spinning icon rather than a claim: the build may still be compiling, and
     // it may yet fail without the app ever coming up.
@@ -765,47 +785,36 @@ function refreshStatusBar() {
     // that says anything if it never finishes starting.
     statusState.tooltip = 'Starting -- click to show the build output';
     statusState.command = 'grails.showOutput';
-    // No colour yet: it has not succeeded, and it may not.
-    statusState.color = undefined;
   }
   statusState.show();
 
   statusStop.text = '$(debug-stop) Stop';
   statusStop.command = debugging ? 'grails.stopDebug' : 'grails.stopApp';
-  // No red while debugging. VSCode paints the whole status bar with its own
-  // debugging colour for the length of a session, and red text on that background
-  // is harder to read than plain text, not easier -- the bar is already saying it.
-  statusStop.color = debugging ? undefined : new vscode.ThemeColor('charts.red');
   statusStop.show();
 }
 
 function createStatusBar(context) {
-  // Right-aligned, high priority so the pair stays together and near the left of
-  // that group rather than drifting between other extensions' items.
-  // Green for the things that start something, red for the thing that stops it,
-  // the way a run toolbar reads everywhere else. ThemeColor rather than a literal
-  // so it tracks the theme; the status bar only allows a foreground colour, its
-  // background being restricted to the error and warning ones.
-  const GREEN = new vscode.ThemeColor('charts.green');
-  const RED = new vscode.ThemeColor('charts.red');
-
+  // High priority so the group stays together and near the left of that group
+  // rather than drifting between other extensions' items.
+  // No foreground colours. The status bar background is the theme's accent (and
+  // its own debugging colour mid-session), and the charts.* palette is tuned for
+  // the editor background -- charts.green on that blue reads as muddy and lower
+  // contrast than plain text. The icons already carry the meaning, which is how
+  // VSCode's own run/debug items do it.
   statusRun = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusRun.text = '$(play) Grails';
   statusRun.tooltip = 'Grails: Run App';
   statusRun.command = 'grails.runApp';
-  statusRun.color = GREEN;
 
   statusDebug = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
   statusDebug.text = '$(debug-alt) Debug';
   statusDebug.tooltip = 'Grails: Debug App';
   statusDebug.command = 'grails.debug';
-  statusDebug.color = GREEN;
 
   statusState = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
 
   statusStop = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 97);
   statusStop.tooltip = 'Stop the running Grails app';
-  statusStop.color = RED;
 
   context.subscriptions.push(statusRun, statusDebug, statusState, statusStop);
   refreshStatusBar();
