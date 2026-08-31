@@ -1,5 +1,15 @@
 # Change Log
 
+## 0.1.4 — pre-release
+
+### Changed
+
+- The status bar controls drop their colour while a debug session is running.
+  VSCode paints the whole bar with its own debugging colour for the length of a
+  session, and coloured text on that background reads worse than plain text, not
+  better. Green and red are back as soon as the session ends.
+- The README lists the Marketplace, source, issue and changelog links.
+
 ## 0.1.3 — pre-release
 
 ### Changed

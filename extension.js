@@ -755,7 +755,7 @@ function refreshStatusBar() {
     statusState.text = `$(check) Grails ${grailsAppUrl.replace(/^https?:\/\//, '')}`;
     statusState.tooltip = `${grailsAppUrl} -- click to open`;
     statusState.command = 'grails.openApp';
-    statusState.color = new vscode.ThemeColor('charts.green');
+    statusState.color = debugging ? undefined : new vscode.ThemeColor('charts.green');
   } else {
     // A spinning icon rather than a claim: the build may still be compiling, and
     // it may yet fail without the app ever coming up.
@@ -772,6 +772,10 @@ function refreshStatusBar() {
 
   statusStop.text = '$(debug-stop) Stop';
   statusStop.command = debugging ? 'grails.stopDebug' : 'grails.stopApp';
+  // No red while debugging. VSCode paints the whole status bar with its own
+  // debugging colour for the length of a session, and red text on that background
+  // is harder to read than plain text, not easier -- the bar is already saying it.
+  statusStop.color = debugging ? undefined : new vscode.ThemeColor('charts.red');
   statusStop.show();
 }
 
