@@ -64,6 +64,35 @@ function childEnvironment(extra) {
 }
 
 /**
+ * Kills a build and everything it started.
+ *
+ * proc.kill() reaches only the process we spawned. Gradle forks the application
+ * into a JVM of its own, so killing the wrapper leaves that JVM running and
+ * holding the debug port and the HTTP port -- one leaked per Debug App, until the
+ * next run fails with "transport error 202: bind failed: Address already in use"
+ * and it looks like the port was never released.
+ *
+ * Windows has taskkill /T for the whole tree. Elsewhere the child leads its own
+ * process group (see `detached` below) and a signal to the negated pid reaches
+ * all of it.
+ */
+function killProcessTree(proc) {
+  if (!proc || proc.killed || typeof proc.pid !== 'number') {
+    return;
+  }
+  if (process.platform === 'win32') {
+    spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F'], { stdio: 'ignore' })
+      .on('error', () => proc.kill());
+    return;
+  }
+  try {
+    process.kill(-proc.pid, 'SIGTERM');
+  } catch (err) {
+    proc.kill();
+  }
+}
+
+/**
  * spawn() a build and stream its output into a channel.
  *
  * Deliberately NOT exec(): child_process.exec buffers the whole output in memory
@@ -111,12 +140,15 @@ function spawnBuild(options) {
   // A configured command line is a shell command by definition, so it goes through
   // a shell. The wrapper does not: it is an absolute path, and cmd.exe runs the
   // .bat directly, which also keeps a path containing spaces intact.
+  // detached only off Windows, and only to make the child a process group leader
+  // so killProcessTree can signal the group. The parent still waits on it.
+  const detached = process.platform !== 'win32';
   const proc = commandLine
-    ? spawn(commandLine, { cwd: options.cwd, shell: true, env })
+    ? spawn(commandLine, { cwd: options.cwd, shell: true, env, detached })
     : process.platform === 'win32'
       ? spawn('cmd.exe', ['/d', '/s', '/c', wrapper].concat(args),
               { cwd: options.cwd, env })
-      : spawn(wrapper, args, { cwd: options.cwd, env });
+      : spawn(wrapper, args, { cwd: options.cwd, env, detached });
 
   const onLine = options.onLine;
   let pending = '';
@@ -329,7 +361,7 @@ function activate(context) {
       return;
     }
     vscode.window.showInformationMessage('Stopping Grails app (normal mode)...');
-    gradleRunProcess.kill();
+    killProcessTree(gradleRunProcess);
     gradleRunProcess = null;
   });
 
@@ -433,7 +465,7 @@ function activate(context) {
       return;
     }
     vscode.window.showInformationMessage('Stopping Grails debug process...');
-    gradleDebugProcess.kill();
+    killProcessTree(gradleDebugProcess);
     gradleDebugProcess = null;
   });
 
@@ -682,11 +714,11 @@ function activate(context) {
 
 function deactivate() {
   if (gradleRunProcess) {
-    gradleRunProcess.kill();
+    killProcessTree(gradleRunProcess);
     gradleRunProcess = null;
   }
   if (gradleDebugProcess) {
-    gradleDebugProcess.kill();
+    killProcessTree(gradleDebugProcess);
     gradleDebugProcess = null;
   }
 }
