@@ -84,11 +84,18 @@ attach 模式下不需要解析 Groovy:`ReferenceType.locationsOfLine(n)` 就是
 
 `dist/` 是构建产物,已 gitignore。**F5 之前先 `npm run build:server`**,否则 adapter 不存在。
 
-**T1 余项**(文档 §7.3 末尾有完整列表):
+`next` 与 `stepIn` 也已实机验证。step filter 是**两层**的:JDI 的包排除只管成本,
+「落点源文件在不在 `sourcePaths` 下」才是决定停不停的规则(见 §7.3「step filter」)。
 
-1. **编辑器里没跑过** —— 全部验证都是脚本驱动的,Extension Development Host 里的实际体验未验。
-2. **单步未实机验证** —— `next`/`stepIn`/`stepOut` 已实现并带 step filter,但只经过编译。
-3. `evaluate` / 条件断点属 T2。
+**T1 余项**(文档 §7.3 有完整列表与实测数据):
+
+1. **编辑器里一次都没跑过** —— 全部验证都是脚本驱动的 DAP 客户端(scratchpad 的
+   `dapclient.js` + `runcase.sh`),Extension Development Host 里的实际体验完全未知。
+2. **已定位未修**:从**行中段**发起的 step over 会冲出整个方法体(两个假设已被实验证伪,
+   见 §7.3「遗留缺陷」)。
+3. **已知限制**:`stepIn` 步不进 `@Transactional` 方法;`stepOut` 只经过编译没实测;
+   多线程同时命中的行为未验。
+4. `evaluate` / 条件断点属 T2。
 
 ### 已定的架构决策
 
