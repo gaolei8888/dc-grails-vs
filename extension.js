@@ -253,11 +253,20 @@ async function ensureDebugPortFree() {
     return true;
   }
   const stop = 'Stop ' + holder.name + ' (' + holder.pid + ')';
+  // Modal, because what it is competing with is a build that stops after
+  // :findMainClass and prints nothing for five minutes. A toast in the corner
+  // that folds itself into the bell icon is not enough warning for that.
   const choice = await vscode.window.showWarningMessage(
     'Port ' + DEBUG_PORT + ' is already in use by ' + holder.name + ', pid '
-    + holder.pid + '. The JVM cannot open its debug port, and the build stops '
-    + 'after :findMainClass without reporting anything.',
-    stop, 'Start anyway', 'Cancel');
+    + holder.pid + '.',
+    {
+      modal: true,
+      detail: 'The JVM will not be able to open its debug port. The build stops '
+        + 'after :findMainClass and reports nothing, which looks like a hang.'
+        + '\n\n'
+        + 'This is usually an earlier run of the same app that outlived the editor.'
+    },
+    stop, 'Start anyway');
   if (choice !== stop) {
     return choice === 'Start anyway';
   }
