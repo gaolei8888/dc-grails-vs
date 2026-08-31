@@ -10,15 +10,17 @@ plugins {
 group = 'org.groovydap'
 version = '0.1.0'
 
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(17)
-    }
-}
-
+// Built by whatever JDK runs Gradle, as long as it is 17 or newer, and always
+// emitting 17 bytecode. Deliberately not a Java toolchain: toolchain resolution
+// only finds JDKs in the places Gradle knows to look, so a perfectly good JDK
+// unpacked somewhere of your own choosing fails the build with "Cannot find a
+// Java installation matching {languageVersion=17}" -- for a two-file build that
+// needs no particular vendor, that is a cost with no benefit.
+//
 // jdk.jdi is not in the default root module set, so it has to be requested
 // explicitly both here and on the launch command line (see extension.js).
 tasks.withType(JavaCompile).configureEach {
+    options.release = 17
     options.compilerArgs += ['--add-modules', 'jdk.jdi']
     options.encoding = 'UTF-8'
 }
