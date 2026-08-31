@@ -495,6 +495,7 @@ server/
 | 一次调用只停一次(§7.2 ① 的去重) | 通过 |
 | 栈帧回映射到 `.groovy` 文件 | 通过 |
 | `groovy.lang.Reference` 解包 + 装箱值显示 | 通过(`base = 0` 而非 `Integer (id=…)`) |
+| `next` 单步 | 通过 —— 见下方「单步」 |
 
 停顿序列 20 → 23 → 25 → 25 → 23 → 25 → 25 → 23,与源码循环结构完全吻合。
 
@@ -503,6 +504,42 @@ server/
 于是同一个 set 里的第二个事件又被当成新停顿放行 —— 行 20 停了两次。现在(a)一个 `EventSet`
 只认第一个断点事件,(b)抑制时**保留**记录:下一次调用会在**同一个 bci** 重新进入,这正是
 区分「同一次调用的后半段」和「新的一次调用」的依据。
+
+#### 单步(实机,2026-08-30)
+
+在 `$tt__transactionalMethod` 行 20 停下后连续 `next`:
+
+```
+20 → 21 → 22 → 28 → 29 → SpikeController.index:9
+```
+
+**行 22 是 `(1..3).each { i ->`,step over 正确地跳过了整个闭包直接到 28** —— 这是 step over
+该有的语义,说明 §7 T1 坑 ③ 的两条调用路径都被 filter 盖住了。走完方法体后回到调用方
+`SpikeController.index` 的第 9 行(正是那次调用所在的行)。
+
+**但第一版不是这样**,它把用户带进了事务管道:
+
+```
+29 → SpikeService$_transactionalMethod_closure2.doCall  line 0     ← AST 生成的事务回调
+   → GrailsTransactionTemplate$2.doInTransaction        line 98
+   → TransactionTemplate.execute                        line 140
+```
+
+关键在第一帧:`$_transactionalMethod_closure2` **就在用户自己的源文件里**,包名过滤根本盖不住
+它。但它整个类没有 `LineNumberTable`,`lineNumber()` 返回 **-1** —— 这给出一条干净且通用的
+规则:**落到没有行号的位置就不停,自动续步**(带上限,防止在生成代码里无限走)。修复由两部分
+组成:
+
+1. `lineNumber() < 0` → 不上报,用同样的 depth 重新发一个 `StepRequest`;
+2. 默认 step filter 补上事务管道:`grails.gorm.transactions.*`、`org.grails.datastore.*`、
+   `org.springframework.{transaction,aop,cglib}.*`。整份 filter 可由 attach 参数
+   `stepFilters` 覆盖。
+
+**遗留(未解释)**:从 `SpikeController.index:9` 再 `next`,落点不是同一方法的第 10 行,而是
+`org.grails.core.DefaultGrailsControllerClass$ReflectionInvoker.invoke:215` —— 即直接跨出了
+controller 帧。`javap -l` 显示 `index()` 的行号表干净且单路径(8/9/10/11,无双代码路径),所以
+现有的解释都不成立。**这是 T1 的待查项,不要当成已知行为。** 下一步应在 spike 里把每次 step
+落点的 bci 与帧深度都打出来。
 
 **extension 侧接线**:`package.json` 加了 `contributes.breakpoints`(language `groovy`,
 **没有这一条 VSCode 根本不允许在 .groovy 上打断点**)、`contributes.debuggers`(type `groovy`)
@@ -514,10 +551,8 @@ server/
 
 1. **编辑器里没跑过** —— 上面全部是脚本驱动的验证。Extension Development Host 里的实际
    体验(断点图标、变量面板渲染、单步手感)未验。
-2. **单步没有实机验证** —— `next`/`stepIn`/`stepOut` 已实现并带 step filter
-   (`org.codehaus.groovy.*`、`groovy.lang.*`、`java.lang.invoke.*`、反射系列),但只经过编译,
-   没在 Grails 上跑过。§7 T1 坑 ③ 说的两条不同调用路径(invokedynamic vs metaclass)是否都被
-   filter 盖住,要实测。
+2. **`next` 已实机验证(见上方「单步」),但 `stepIn` / `stepOut` 仍只经过编译**;且从 controller
+   行再 step over 会跨出 controller 帧,原因未查明。
 3. `evaluate` / 条件断点 —— 属 T2。
 4. 多 `EventSet` 并发命中(多线程同时停)的行为未验。
 

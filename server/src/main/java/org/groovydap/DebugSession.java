@@ -55,7 +55,7 @@ public final class DebugSession {
      * while a closure call arrives through {@code NativeMethodAccessorImpl},
      * {@code CachedMethod.invoke} and {@code ClosureMetaClass.invokeMethod}.
      */
-    private static final String[] STEP_EXCLUDES = {
+    private static final List<String> DEFAULT_STEP_EXCLUDES = List.of(
         "org.codehaus.groovy.*",
         "groovy.lang.*",
         "groovy.util.*",
@@ -63,7 +63,18 @@ public final class DebugSession {
         "java.lang.reflect.*",
         "jdk.internal.reflect.*",
         "sun.reflect.*",
-    };
+        // Stepping off the end of a @Transactional method lands in the template
+        // that wraps it -- measured against Grails 7.2.3, where step-over out of
+        // the method walked into GrailsTransactionTemplate and then Spring's
+        // TransactionTemplate.
+        "grails.gorm.transactions.*",
+        "org.grails.datastore.*",
+        "org.springframework.transaction.*",
+        "org.springframework.aop.*",
+        "org.springframework.cglib.*");
+
+    /** Guard against stepping forever through generated code with no line table. */
+    private static final int MAX_AUTOMATIC_RESTEPS = 200;
 
     private final DapTransport transport;
 
@@ -82,6 +93,10 @@ public final class DebugSession {
     private volatile ThreadReference stoppedThread;
     private volatile boolean running = true;
     private volatile boolean configured;
+
+    private List<String> stepExcludes = DEFAULT_STEP_EXCLUDES;
+    private final Map<Long, Integer> stepDepths = new ConcurrentHashMap<>();
+    private final Map<Long, Integer> restepBudget = new ConcurrentHashMap<>();
 
     public DebugSession(InputStream in, OutputStream out) {
         this.transport = new DapTransport(in, out);
@@ -156,6 +171,10 @@ public final class DebugSession {
         vm = attachWithRetry(host, port, timeoutMs);
         binder = new BreakpointBinder(vm, this::log, this::sendBreakpointChanged);
         sources = new SourceLocator(strings(args.get("sourcePaths")));
+        List<String> configuredExcludes = strings(args.get("stepFilters"));
+        if (!configuredExcludes.isEmpty()) {
+            stepExcludes = configuredExcludes;
+        }
 
         log("attached to " + host + ":" + port + " (" + vm.name() + " " + vm.version() + ")");
         transport.sendResponse(request, null);
@@ -322,11 +341,18 @@ public final class DebugSession {
     }
 
     private void onContinue(Map<String, Object> request) {
+        Map<String, Object> args = arguments(request);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("allThreadsContinued", Boolean.TRUE);
         transport.sendResponse(request, body);
         resumeTarget();
-        transport.sendEvent("continued", body);
+
+        // The event needs the thread the client asked about; the response does not
+        // carry one, so it cannot be reused here.
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("threadId", (int) number(args.get("threadId"), 0));
+        event.put("allThreadsContinued", Boolean.TRUE);
+        transport.sendEvent("continued", event);
     }
 
     private void onStep(Map<String, Object> request, int depth) {
@@ -336,6 +362,15 @@ public final class DebugSession {
             transport.sendError(request, "no such thread");
             return;
         }
+        stepDepths.put(thread.uniqueID(), depth);
+        restepBudget.put(thread.uniqueID(), MAX_AUTOMATIC_RESTEPS);
+        requestStep(thread, depth);
+
+        transport.sendResponse(request, null);
+        resumeTarget();
+    }
+
+    private void requestStep(ThreadReference thread, int depth) {
         // One step request at a time per thread: JDI rejects a second one.
         for (StepRequest existing : new ArrayList<>(vm.eventRequestManager().stepRequests())) {
             if (existing.thread().equals(thread)) {
@@ -344,15 +379,12 @@ public final class DebugSession {
         }
         StepRequest step = vm.eventRequestManager()
                 .createStepRequest(thread, StepRequest.STEP_LINE, depth);
-        for (String exclude : STEP_EXCLUDES) {
+        for (String exclude : stepExcludes) {
             step.addClassExclusionFilter(exclude);
         }
         step.addCountFilter(1);
         step.setSuspendPolicy(EventRequest.SUSPEND_ALL);
         step.enable();
-
-        transport.sendResponse(request, null);
-        resumeTarget();
     }
 
     private void onPause(Map<String, Object> request) {
@@ -454,10 +486,32 @@ public final class DebugSession {
     private Runnable onStepDone(StepEvent event) {
         vm.eventRequestManager().deleteEventRequest(event.request());
         ThreadReference thread = event.thread();
+
+        if (event.location().lineNumber() < 0 && keepStepping(thread)) {
+            // Generated code with no line number table -- the callback that
+            // @Transactional synthesises around a method body, for one, which
+            // lives in the user's own source file and so cannot be filtered out by
+            // package name. Showing a frame with no position is worse than useless,
+            // so carry on stepping instead of stopping here.
+            requestStep(thread, stepDepths.getOrDefault(thread.uniqueID(), StepRequest.STEP_OVER));
+            return null;
+        }
+
         stoppedThread = thread;
         variables.reset();
         deduper.forget(thread);
         return () -> sendStopped("step", thread, new ArrayList<>());
+    }
+
+    /** @return false once a single user step has re-stepped too many times. */
+    private boolean keepStepping(ThreadReference thread) {
+        long id = thread.uniqueID();
+        int left = restepBudget.getOrDefault(id, 0);
+        if (left <= 0) {
+            return false;
+        }
+        restepBudget.put(id, left - 1);
+        return true;
     }
 
     private static Runnable orFirst(Runnable existing, Runnable candidate) {
