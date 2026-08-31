@@ -5,7 +5,6 @@ import com.sun.jdi.ArrayReference;
 import com.sun.jdi.Field;
 import com.sun.jdi.LocalVariable;
 import com.sun.jdi.ObjectReference;
-import com.sun.jdi.ReferenceType;
 import com.sun.jdi.StackFrame;
 import com.sun.jdi.StringReference;
 import com.sun.jdi.ThreadReference;
@@ -92,13 +91,23 @@ public final class Variables {
         List<Map<String, Object>> children() {
             List<Map<String, Object>> out = new ArrayList<>();
             try {
-                ReferenceType type = object.referenceType();
-                List<Field> fields = type.allFields();
-                Map<Field, Value> values = object.getValues(fields);
-                for (Field field : fields) {
-                    if (isSynthetic(field.name())) {
+                // Instance fields only, and one entry per name. allFields() walks
+                // the whole hierarchy, so it also returns the class's constants --
+                // expanding an Integer listed MIN_VALUE, MAX_VALUE, TYPE, digits,
+                // SIZE, BYTES and serialVersionUID twice, once for Integer and once
+                // for Number -- none of which says anything about this object.
+                List<Field> fields = new ArrayList<>();
+                Set<String> seen = new HashSet<>();
+                for (Field field : object.referenceType().allFields()) {
+                    if (field.isStatic() || isSynthetic(field.name())) {
                         continue;
                     }
+                    if (seen.add(field.name())) {
+                        fields.add(field);
+                    }
+                }
+                Map<Field, Value> values = object.getValues(fields);
+                for (Field field : fields) {
                     out.add(describe(field.name(), values.get(field)));
                 }
             } catch (Exception e) {
@@ -236,7 +245,11 @@ public final class Variables {
             return 0; // a string is a leaf, however it is represented in the VM
         }
         if (value instanceof ObjectReference) {
-            return register(new ObjectFields((ObjectReference) value));
+            ObjectReference object = (ObjectReference) value;
+            if (BOXES.contains(object.referenceType().name())) {
+                return 0; // already shown as its value; there is nothing inside
+            }
+            return register(new ObjectFields(object));
         }
         return 0;
     }
