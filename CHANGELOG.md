@@ -1,5 +1,11 @@
 # Change Log
 
+## 0.1.5 — pre-release
+
+### Changed
+
+- The README asks anyone who uses, clones or builds on this to star it.
+
 ## 0.1.4 — pre-release
 
 ### Changed

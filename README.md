@@ -152,6 +152,12 @@ which is indistinguishable from a hang.
   Gradle wrapper and the adapter attaches to it.
 - GSP files are not mapped.
 
+## Star it
+
+If you use this, clone it, or build something of your own on top of it, please
+star the project on [GitHub](https://github.com/gaolei8888/dc-grails-vs). It takes
+one click, and it is the main way anyone else finds out this exists.
+
 ## License
 
 MIT
