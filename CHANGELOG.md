@@ -1,5 +1,17 @@
 # Change Log
 
+## Unreleased
+
+### Added
+
+- **Exception breakpoints**, caught and uncaught, from the Breakpoints section of
+  the Run and Debug view. Filtered by the same rule as stepping -- the throw site
+  has to be in a file under the project's source roots -- because a Grails request
+  throws and catches its way through startup and dispatch, and stopping for every
+  one of them is not a debugger anyone can use. The exception's message is read as
+  a field rather than by calling getMessage(), since invoking a method in the
+  target to describe a stop means resuming it to do so.
+
 ## 0.1.1 — pre-release
 
 ### Fixed

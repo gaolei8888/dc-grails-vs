@@ -34,6 +34,14 @@ What that means in practice:
   `groovy.lang.Reference` the compiler boxed them in.
 - Stepping skips the framework: the Groovy runtime, reflection, the transaction
   template and the servlet container are stepped over rather than into.
+- **Exception breakpoints**, caught and uncaught, filtered the same way: it stops
+  where your code threw, not in the framework. A Grails request throws and catches
+  its way through startup and dispatch, and stopping for all of it would be
+  unusable.
+
+Exception breakpoints are in the **Breakpoints** section of the Run and Debug
+view. The exception's message is read from the object rather than by calling
+`getMessage()`, so nothing runs in the application to describe a stop.
 
 Run **Grails: Debug App**. It starts `gradlew bootRun --debug-jvm`, waits for the
 JVM to report that it is listening, and attaches. Or write your own attach

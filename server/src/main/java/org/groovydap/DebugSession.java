@@ -1,7 +1,11 @@
 package org.groovydap;
 
 import com.sun.jdi.Bootstrap;
+import com.sun.jdi.Field;
 import com.sun.jdi.Location;
+import com.sun.jdi.ObjectReference;
+import com.sun.jdi.StringReference;
+import com.sun.jdi.Value;
 import com.sun.jdi.StackFrame;
 import com.sun.jdi.ThreadReference;
 import com.sun.jdi.VMDisconnectedException;
@@ -11,6 +15,7 @@ import com.sun.jdi.connect.Connector;
 import com.sun.jdi.event.BreakpointEvent;
 import com.sun.jdi.event.ClassPrepareEvent;
 import com.sun.jdi.event.Event;
+import com.sun.jdi.event.ExceptionEvent;
 import com.sun.jdi.event.EventQueue;
 import com.sun.jdi.event.EventSet;
 import com.sun.jdi.event.StepEvent;
@@ -18,6 +23,7 @@ import com.sun.jdi.event.VMDeathEvent;
 import com.sun.jdi.event.VMDisconnectEvent;
 import com.sun.jdi.request.BreakpointRequest;
 import com.sun.jdi.request.EventRequest;
+import com.sun.jdi.request.ExceptionRequest;
 import com.sun.jdi.request.StepRequest;
 import org.groovydap.dap.DapTransport;
 import org.groovydap.jdi.BreakpointBinder;
@@ -99,6 +105,7 @@ public final class DebugSession {
     /** The event set holding the VM suspended, owed a resume when we continue. */
     private volatile EventSet suspendedSet;
     private volatile ThreadReference stoppedThread;
+    private volatile ExceptionEvent lastException;
     private volatile boolean running = true;
     private volatile boolean configured;
 
@@ -137,7 +144,8 @@ public final class DebugSession {
             case "initialize": onInitialize(request); break;
             case "attach": onAttach(request); break;
             case "setBreakpoints": onSetBreakpoints(request); break;
-            case "setExceptionBreakpoints": transport.sendResponse(request, null); break;
+            case "setExceptionBreakpoints": onSetExceptionBreakpoints(request); break;
+            case "exceptionInfo": onExceptionInfo(request); break;
             case "configurationDone": onConfigurationDone(request); break;
             case "threads": onThreads(request); break;
             case "stackTrace": onStackTrace(request); break;
@@ -169,6 +177,10 @@ public final class DebugSession {
         capabilities.put("supportsConditionalBreakpoints", Boolean.FALSE);
         capabilities.put("supportsEvaluateForHovers", Boolean.FALSE);
         capabilities.put("supportsSetVariable", Boolean.FALSE);
+        capabilities.put("supportsExceptionInfoRequest", Boolean.TRUE);
+        capabilities.put("exceptionBreakpointFilters", List.of(
+                filter("uncaught", "Uncaught exceptions", true),
+                filter("caught", "Caught exceptions", false)));
         transport.sendResponse(request, capabilities);
     }
 
@@ -500,6 +512,8 @@ public final class DebugSession {
                         sawBreakpoint = true;
                         announce = orFirst(announce, onBreakpointHit((BreakpointEvent) event));
                     }
+                } else if (event instanceof ExceptionEvent) {
+                    announce = orFirst(announce, onExceptionThrown((ExceptionEvent) event));
                 } else if (event instanceof StepEvent) {
                     announce = orFirst(announce, onStepDone((StepEvent) event));
                 } else if (event instanceof VMDeathEvent || event instanceof VMDisconnectEvent) {
@@ -608,6 +622,116 @@ public final class DebugSession {
         }
     }
 
+    /**
+     * Exception breakpoints.
+     *
+     * <p>Filtered by the same rule stepping uses -- the exception's throw site has
+     * to be in a file under the configured source roots. Without that, "caught
+     * exceptions" is unusable on a Grails application: the framework throws and
+     * catches constantly on the way up, class loading included, and the debugger
+     * would stop dozens of times before reaching anything the user wrote.
+     */
+    private void onSetExceptionBreakpoints(Map<String, Object> request) {
+        Map<String, Object> args = arguments(request);
+        List<String> filters = strings(args.get("filters"));
+        boolean caught = filters.contains("caught");
+        boolean uncaught = filters.contains("uncaught");
+
+        for (ExceptionRequest existing : new ArrayList<>(vm.eventRequestManager().exceptionRequests())) {
+            vm.eventRequestManager().deleteEventRequest(existing);
+        }
+        if (caught || uncaught) {
+            ExceptionRequest exceptions =
+                    vm.eventRequestManager().createExceptionRequest(null, caught, uncaught);
+            // Cheap first pass, the same one stepping uses: these never generate an
+            // event at all, which matters because the alternative is a round trip
+            // per throw and Grails throws a great many.
+            for (String exclude : stepExcludes) {
+                exceptions.addClassExclusionFilter(exclude);
+            }
+            exceptions.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+            exceptions.enable();
+            log("exception breakpoints: caught=" + caught + " uncaught=" + uncaught);
+        }
+        transport.sendResponse(request, null);
+    }
+
+    private Runnable onExceptionThrown(ExceptionEvent event) {
+        Location where = event.location();
+        if (isOutsideProject(where)) {
+            return null; // thrown inside a dependency; not this user's problem
+        }
+        ThreadReference thread = event.thread();
+        int depth;
+        try {
+            depth = thread.frameCount();
+        } catch (Exception e) {
+            depth = -1;
+        }
+        // Same rule as breakpoints: one stop per line. An exception on its way up
+        // passes the same line more than once -- Groovy's dispatch rethrows -- and
+        // reporting each pass says nothing the first did not.
+        if (!deduper.shouldReport(thread, where, depth)) {
+            return null;
+        }
+        lastException = event;
+        stoppedThread = thread;
+        variables.reset();
+        String type = event.exception().referenceType().name();
+        return () -> sendStopped("exception", thread, new ArrayList<>(), type);
+    }
+
+    /** DAP exceptionInfo: what was thrown, and where it goes if nobody catches it. */
+    private void onExceptionInfo(Map<String, Object> request) {
+        ExceptionEvent event = lastException;
+        if (event == null) {
+            transport.sendError(request, "no exception is being reported");
+            return;
+        }
+        String type = event.exception().referenceType().name();
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("message", exceptionMessage(event));
+        details.put("typeName", type);
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("exceptionId", type);
+        body.put("description", exceptionMessage(event));
+        body.put("breakMode", event.catchLocation() == null ? "unhandled" : "always");
+        body.put("details", details);
+        transport.sendResponse(request, body);
+    }
+
+    /**
+     * The exception's message, read as a field.
+     *
+     * <p>Not by calling getMessage(): invoking a method in the target VM means
+     * resuming threads to run it, and a debugger that runs user code to describe a
+     * stop can deadlock or change what it is describing.
+     */
+    private String exceptionMessage(ExceptionEvent event) {
+        try {
+            ObjectReference thrown = event.exception();
+            Field message = thrown.referenceType().fieldByName("detailMessage");
+            if (message == null) {
+                return thrown.referenceType().name();
+            }
+            Value value = thrown.getValue(message);
+            return value instanceof StringReference
+                    ? ((StringReference) value).value()
+                    : thrown.referenceType().name();
+        } catch (Exception e) {
+            return "<could not read the message: " + e + ">";
+        }
+    }
+
+    private static Map<String, Object> filter(String id, String label, boolean on) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("filter", id);
+        entry.put("label", label);
+        entry.put("default", on);
+        return entry;
+    }
+
     /** @return false once a single user step has re-stepped too many times. */
     private boolean keepStepping(ThreadReference thread) {
         long id = thread.uniqueID();
@@ -624,8 +748,17 @@ public final class DebugSession {
     }
 
     private void sendStopped(String reason, ThreadReference thread, List<Integer> breakpointIds) {
+        sendStopped(reason, thread, breakpointIds, null);
+    }
+
+    private void sendStopped(String reason, ThreadReference thread,
+                             List<Integer> breakpointIds, String description) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("reason", reason);
+        if (description != null) {
+            body.put("description", description);
+            body.put("text", description);
+        }
         body.put("threadId", thread == null ? 0 : idOf(thread));
         body.put("allThreadsStopped", Boolean.TRUE);
         if (!breakpointIds.isEmpty()) {
