@@ -1,5 +1,17 @@
 # Change Log
 
+## 0.1.8 — pre-release
+
+### Added
+
+- **Hover and watch**, for anything shaped like a path: a name, a field chain, a
+  map key, an index. Names from the Grails scope resolve as well, so `params` and
+  `request` answer in a hover although neither is in the source.
+- Read rather than run. A call, an operator or a closure is refused by name and
+  with the reason, because running code in the application to answer a hover can
+  deadlock it or change what is being looked at -- and reporting "no such field"
+  about `list.size()` would be a wrong answer about something that exists.
+
 ## 0.1.7 — pre-release
 
 ### Added

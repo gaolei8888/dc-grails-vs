@@ -143,6 +143,18 @@ it, it says what, and offers to stop it — because a JVM that cannot open its d
 port produces a build that stops after `:findMainClass` and prints nothing at all,
 which is indistinguishable from a hang.
 
+## Hover and watch
+
+Hovering a name shows its value, and watch expressions work, for anything that is
+a path: `user.name`, `params['id']`, `items[0].label`, `this.someService`. Names
+from the Grails scope resolve too, so `params` and `request` work in a hover even
+though neither appears in the source.
+
+Read, not run. A method call, an operator or a closure needs an expression
+compiled and executed inside the application, which means resuming its threads to
+do it -- so those are refused, by name and with the reason, rather than reported
+as missing.
+
 ## Known issues
 
 - **Step over from the middle of a line overshoots.** After a call returns you are
@@ -151,9 +163,9 @@ which is indistinguishable from a hang.
 - **Step into does not enter a `@Transactional` method.** Its entry runs through
   the transaction template, and stepping climbs back out to the calling line. Put a
   breakpoint in the method instead.
-- **Conditional breakpoints, watch expressions and hover evaluation are not
-  implemented.** They need Groovy expressions compiled and evaluated inside the
-  target VM.
+- **Conditional breakpoints are not implemented**, and hover and watch read paths
+  rather than evaluating expressions (see above). Both want a Groovy expression
+  compiled and run inside the target VM.
 - **Attach only.** There is no launch configuration; the app is started by the
   Gradle wrapper and the adapter attaches to it.
 - GSP files are not mapped.

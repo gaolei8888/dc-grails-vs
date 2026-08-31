@@ -302,6 +302,21 @@ public final class Variables {
         return register(new FrameLocals(thread, frameIndex));
     }
 
+    /**
+     * One value, described the way an evaluate response wants it.
+     *
+     * <p>Same rendering as the pane, so a hover and the variables view never
+     * disagree about what something is.
+     */
+    public synchronized Map<String, Object> describeResult(Value value) {
+        Map<String, Object> described = describe("", value, null);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("result", described.get("value"));
+        body.put("type", described.get("type"));
+        body.put("variablesReference", described.get("variablesReference"));
+        return body;
+    }
+
     /** A handle over just these fields of this object, in this order. */
     public synchronized int curatedHandle(ObjectReference object, List<String> fieldNames) {
         return register(new CuratedFields(object, fieldNames));

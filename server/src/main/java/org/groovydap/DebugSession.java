@@ -28,6 +28,7 @@ import com.sun.jdi.request.StepRequest;
 import org.groovydap.dap.DapTransport;
 import org.groovydap.jdi.BreakpointBinder;
 import org.groovydap.jdi.GrailsWebScope;
+import org.groovydap.jdi.PathEvaluator;
 import org.groovydap.jdi.SourceLocator;
 import org.groovydap.jdi.StopDeduper;
 import org.groovydap.jdi.Variables;
@@ -157,8 +158,7 @@ public final class DebugSession {
             case "stepIn": onStep(request, StepRequest.STEP_INTO); break;
             case "stepOut": onStep(request, StepRequest.STEP_OUT); break;
             case "pause": onPause(request); break;
-            case "evaluate": transport.sendError(request,
-                    "expression evaluation is not implemented yet"); break;
+            case "evaluate": onEvaluate(request); break;
             case "disconnect":
             case "terminate":
                 transport.sendResponse(request, null);
@@ -176,7 +176,7 @@ public final class DebugSession {
         // Not yet: conditional breakpoints need Groovy expressions compiled and
         // evaluated inside the target VM, which is the T2 work item.
         capabilities.put("supportsConditionalBreakpoints", Boolean.FALSE);
-        capabilities.put("supportsEvaluateForHovers", Boolean.FALSE);
+        capabilities.put("supportsEvaluateForHovers", Boolean.TRUE);
         capabilities.put("supportsSetVariable", Boolean.FALSE);
         capabilities.put("supportsExceptionInfoRequest", Boolean.TRUE);
         capabilities.put("exceptionBreakpointFilters", List.of(
@@ -379,6 +379,35 @@ public final class DebugSession {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("variables", variables.children(reference));
         transport.sendResponse(request, body);
+    }
+
+    /**
+     * A hover, a watch or a repl line, answered by reading rather than running.
+     *
+     * <p>Which is most of what is asked: a name, a field path, a map key. What it
+     * cannot do -- a call, an operator, a closure -- it says so about, because
+     * "no such field" would be a wrong answer about something that exists.
+     */
+    private void onEvaluate(Map<String, Object> request) {
+        Map<String, Object> args = arguments(request);
+        int frameId = (int) number(args.get("frameId"), -1);
+        ThreadReference thread = threadsById.get(frameId >> 16);
+        int frameIndex = frameId & 0xFFFF;
+        if (thread == null) {
+            transport.sendError(request, "no frame to evaluate against");
+            return;
+        }
+        try {
+            StackFrame frame = thread.frame(frameIndex);
+            Value value = PathEvaluator.evaluate(String.valueOf(args.get("expression")),
+                    frame, GrailsWebScope.find(vm, thread));
+            transport.sendResponse(request, variables.describeResult(value));
+        } catch (PathEvaluator.Unsupported e) {
+            transport.sendError(request, e.getMessage());
+        } catch (Exception e) {
+            transport.sendError(request, e.getClass().getSimpleName()
+                    + (e.getMessage() == null ? "" : ": " + e.getMessage()));
+        }
     }
 
     private void onContinue(Map<String, Object> request) {
