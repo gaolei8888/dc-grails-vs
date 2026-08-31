@@ -26,6 +26,7 @@
     "groovy debug"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onDebugResolve:groovy"
   ],
   "main": "./extension.js",
