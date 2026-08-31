@@ -397,6 +397,42 @@ class GrailsCommandsProvider {
   }
 }
 
+/**
+ * Whether a folder looks like a Grails project.
+ *
+ * The sidebar view is gated on this, so it does not sit in the activity bar of
+ * every unrelated workspace. Generous on purpose: a false negative hides a view
+ * the user is looking for, while a false positive costs one icon. grails-app is
+ * the give-away, and a Gradle build that names a Grails version counts too, for
+ * layouts that do not have it.
+ */
+function looksLikeGrailsProject(folder) {
+  if (fs.existsSync(path.join(folder, 'grails-app'))) {
+    return true;
+  }
+  for (const file of ['gradle.properties', 'build.gradle', 'build.gradle.kts']) {
+    const candidate = path.join(folder, file);
+    try {
+      if (fs.existsSync(candidate)
+          && /grails/i.test(fs.readFileSync(candidate, 'utf8'))) {
+        return true;
+      }
+    } catch (err) {
+      // unreadable is not a reason to hide the view
+    }
+  }
+  return false;
+}
+
+function refreshGrailsContext() {
+  const folders = vscode.workspace.workspaceFolders;
+  // No folder open at all: show it rather than leave the user wondering where the
+  // extension went.
+  const isGrails = !folders || folders.length === 0
+    || folders.some(folder => looksLikeGrailsProject(folder.uri.fsPath));
+  vscode.commands.executeCommand('setContext', 'grails:isGrailsProject', isGrails);
+}
+
 // Status bar. Run/Debug/Stop are stateful -- whether the app is up is the thing
 // you want to see without looking for it -- so they live here rather than in the
 // tree, which is for actions that take an argument.
@@ -454,6 +490,9 @@ function activate(context) {
     vscode.window.registerTreeDataProvider('grailsCommands', new GrailsCommandsProvider())
   );
   createStatusBar(context);
+  refreshGrailsContext();
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(refreshGrailsContext));
 
   // ===== Dedicated Commands for Running the App (Grails-specific) =====
 

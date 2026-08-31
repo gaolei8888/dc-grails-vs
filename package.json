@@ -1,7 +1,7 @@
 {
   "name": "grails-gradle-extension",
-  "displayName": "Grails & Gradle Extension",
-  "description": "A VS Code extension for running Grails and Gradle tasks.",
+  "displayName": "Grails",
+  "description": "Grails development for VS Code: breakpoints that actually bind in .groovy files, closures included, plus the Grails and Gradle commands.",
   "version": "0.0.1",
   "publisher": "gaolei8888",
   "engines": {
@@ -20,7 +20,10 @@
     "groovy",
     "gradle",
     "debugger",
-    "breakpoints"
+    "breakpoints",
+    "gorm",
+    "grails debug",
+    "groovy debug"
   ],
   "activationEvents": [
     "onDebugResolve:groovy"
@@ -47,7 +50,8 @@
       "grails": [
         {
           "id": "grailsCommands",
-          "name": "Commands"
+          "name": "Commands",
+          "when": "grails:isGrailsProject"
         }
       ]
     },
