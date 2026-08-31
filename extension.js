@@ -118,6 +118,25 @@ function killProcessTree(proc) {
 }
 
 /**
+ * The output channel for a name, created once.
+ *
+ * createOutputChannel returns a new channel every call, and two channels may
+ * share a name, so calling it per run left a fresh "Grails - Debug" in the Output
+ * dropdown after every start and the old ones holding the log you wanted.
+ */
+const channels = new Map();
+
+function outputChannel(name) {
+  if (!channels.has(name)) {
+    channels.set(name, vscode.window.createOutputChannel(name));
+  }
+  return channels.get(name);
+}
+
+/** The channel a running app is logging to, for "show me the log". */
+let activeChannelName = null;
+
+/**
  * spawn() a build and stream its output into a channel.
  *
  * Deliberately NOT exec(): child_process.exec buffers the whole output in memory
@@ -149,7 +168,8 @@ function spawnBuild(options) {
     return null;
   }
 
-  const channel = vscode.window.createOutputChannel(options.channelName);
+  const channel = outputChannel(options.channelName);
+  activeChannelName = options.channelName;
   channel.show(true);
   channel.appendLine('> ' + (commandLine || wrapper + ' ' + args.join(' ')));
   const injected = Object.keys(settings.env);
@@ -532,8 +552,11 @@ function refreshStatusBar() {
     // it may yet fail without the app ever coming up.
     statusState.text = debugging ? '$(sync~spin) Grails starting (debug)' : '$(sync~spin) Grails starting';
     statusState.tooltip = 'Waiting for the application to report that it is running';
-    statusState.command = undefined;
-    // No colour while starting: it has not succeeded yet, and it may not.
+    // The log is exactly what you want while it is starting, and the only thing
+    // that says anything if it never finishes starting.
+    statusState.tooltip = 'Starting -- click to show the build output';
+    statusState.command = 'grails.showOutput';
+    // No colour yet: it has not succeeded, and it may not.
     statusState.color = undefined;
   }
   statusState.show();
@@ -593,6 +616,11 @@ function activate(context) {
     if (grailsAppUrl) {
       vscode.env.openExternal(vscode.Uri.parse(grailsAppUrl));
     }
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('grails.showOutput', () => {
+    const name = activeChannelName || 'Grails - Normal';
+    outputChannel(name).show(true);
   }));
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(refreshGrailsContext));

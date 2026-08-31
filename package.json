@@ -175,6 +175,10 @@
     },
     "commands": [
       {
+        "command": "grails.showOutput",
+        "title": "Grails: Show Output"
+      },
+      {
         "command": "grails.runApp",
         "title": "Grails: Run App"
       },

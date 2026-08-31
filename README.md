@@ -49,8 +49,13 @@ the **Grails** view in the activity bar, grouped into Run, Create, Generate,
 Database Migration and Gradle; the rest are in the command palette under `Grails:`
 and `Gradle:`.
 
-Run, Debug and Stop are also in the status bar, and Stop knows which of the two is
-running.
+Run, Debug and Stop are also in the status bar, in green and red. While a build is
+running the pair is replaced by a spinner that turns into a check and the address
+once the application reports that it is serving; clicking it opens the app, or
+shows the build output while it is still starting.
+
+The application's log goes to an output channel — **Grails - Normal** for Run App,
+**Grails - Debug** for Debug App — reachable any time with **Grails: Show Output**.
 
 ## Requirements
 
