@@ -2,6 +2,7 @@ const vscode = require('vscode');
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 // Dedicated processes for long‑running tasks (runApp and debug)
 let gradleRunProcess = null;
@@ -328,63 +329,93 @@ function spawnBuild(options) {
   // configured command line is a shell command by definition. The only user input
   // that reaches here is grails.run.command, whose whole purpose is to be the
   // command that runs.
-  // Both go through a shell, with the wrapper's absolute path quoted for spaces.
+  // Output goes to a file, and we tail the file. Not to a pipe.
   //
-  // Running cmd.exe /d /s /c with the wrapper and its arguments as separate argv
-  // entries reads better and works when the parent is a plain node process. From
-  // the extension host it does not: every build stopped dead after :findMainClass,
-  // with the application started and holding its ports and not one further line of
-  // its output ever arriving. shell:true is the form that has been seen to work in
-  // an editor, so that is the form to use. The absolute path stays -- a bare
-  // `gradlew.bat` is what cmd could not resolve to begin with.
+  // With a pipe, the child blocks on write as soon as the buffer fills and nobody
+  // drains it, and a blocked application looks exactly like a hung build: output
+  // stops mid-task, the app holds the ports it already bound and never finishes
+  // starting, and killing it flushes everything at once. Running the same command
+  // from a terminal, or spawning it from a plain node process, showed the output
+  // flowing normally -- only from the extension host did it stop, every time,
+  // right after :findMainClass.
   //
-  // detached only off Windows, and only to make the child a process group leader
-  // so the group can be signalled. The parent still waits on it.
+  // Rather than keep looking for which link in that chain misbehaves, take the
+  // pipe out. A file has no buffer to fill, so the application cannot be blocked
+  // by anything on this side.
+  const logPath = path.join(os.tmpdir(),
+    'grails-vscode-' + process.pid + '-' + Date.now() + '.log');
+  let logFd;
+  try {
+    logFd = fs.openSync(logPath, 'w');
+  } catch (err) {
+    vscode.window.showErrorMessage('Could not open a log file for the build: ' + err.message);
+    return null;
+  }
+
   const detached = process.platform !== 'win32';
   const quoted = process.platform === 'win32' ? '"' + wrapper + '"' : wrapper;
   const proc = commandLine
-    ? spawn(commandLine, { cwd: options.cwd, shell: true, env, detached })
-    : spawn(quoted, args, { cwd: options.cwd, shell: true, env, detached });
+    ? spawn(commandLine, { cwd: options.cwd, shell: true, env, detached,
+        stdio: ['ignore', logFd, logFd] })
+    : spawn(quoted, args, { cwd: options.cwd, shell: true, env, detached,
+        stdio: ['ignore', logFd, logFd] });
 
   const onLine = options.onLine;
+  let readAt = 0;
   let pending = '';
-  const pump = chunk => {
-    // Nothing in here may throw. A listener that throws stops the stream being
-    // consumed; the pipe fills at 64 KB and the application blocks on its next
-    // write, forever. What that looks like from outside is a build that stops
-    // printing the moment the app starts logging and an app that binds its ports
-    // and then never finishes starting -- with no error anywhere, because the
-    // error was in the reader.
+
+  const drain = () => {
+    let text = '';
     try {
-      const text = chunk.toString();
-      channel.append(text);
-      if (!onLine) {
+      const size = fs.statSync(logPath).size;
+      if (size <= readAt) {
         return;
       }
-      pending += text;
-      const lines = pending.split(/\r?\n/);
-      pending = lines.pop();
-      for (const line of lines) {
-        try {
-          onLine(line);
-        } catch (err) {
-          channel.appendLine('[grails] line handler failed: ' + (err && err.stack || err));
-        }
+      const fd = fs.openSync(logPath, 'r');
+      try {
+        const buffer = Buffer.alloc(size - readAt);
+        const read = fs.readSync(fd, buffer, 0, buffer.length, readAt);
+        readAt += read;
+        text = buffer.slice(0, read).toString();
+      } finally {
+        fs.closeSync(fd);
       }
     } catch (err) {
+      return; // the file may not exist yet
+    }
+    if (!text) {
+      return;
+    }
+    channel.append(text);
+    if (!onLine) {
+      return;
+    }
+    pending += text;
+    const lines = pending.split(/\r?\n/);
+    pending = lines.pop();
+    for (const line of lines) {
       try {
-        channel.appendLine('[grails] output pump failed: ' + (err && err.stack || err));
-      } catch (ignored) {
-        // the channel itself is gone; there is nowhere left to report to
+        onLine(line);
+      } catch (err) {
+        channel.appendLine('[grails] line handler failed: ' + (err && err.stack || err));
       }
     }
   };
-  proc.stdout.on('data', pump);
-  proc.stderr.on('data', pump);
+
+  const tail = setInterval(drain, 300);
   proc.on('error', err => {
-    channel.appendLine(`\n[failed to start] ${err.message}`);
+    channel.appendLine('[failed to start] ' + err.message);
     vscode.window.showErrorMessage(
-      `Could not run ${commandLine || wrapper}: ${err.message}`);
+      'Could not run ' + (commandLine || wrapper) + ': ' + err.message);
+  });
+  proc.on('close', () => {
+    clearInterval(tail);
+    drain(); // whatever was written between the last tick and exiting
+    try {
+      fs.closeSync(logFd);
+    } catch (err) {
+      // already closed
+    }
   });
   return proc;
 }
