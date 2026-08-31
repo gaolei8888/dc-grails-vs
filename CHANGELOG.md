@@ -1,5 +1,24 @@
 # Change Log
 
+## 0.1.6 — pre-release
+
+### Fixed
+
+- Breakpoints no longer accumulate dead requests across Spring Boot devtools
+  restarts. A restart prepares every application class again in a new class
+  loader, and the breakpoints rebound to it correctly — but the previous requests
+  were left behind, two per breakpoint per restart, pointing into a class loader
+  nobody holds any more. They are dropped when the class name comes back.
+
+### Note
+
+- **Devtools restarts do not break breakpoints.** Earlier documentation here said
+  they did and advised turning devtools off. That was never tested and it is
+  wrong: a restart happens inside the same JVM, so the debug connection survives,
+  and the standing class-prepare request rebinds every breakpoint as the new class
+  loader prepares the classes. Verified by hitting a breakpoint, triggering a
+  restart, and hitting the same breakpoint again.
+
 ## 0.1.5 — pre-release
 
 ### Changed

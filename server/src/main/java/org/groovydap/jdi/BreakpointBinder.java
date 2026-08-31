@@ -54,12 +54,35 @@ public final class BreakpointBinder {
         int line;
         boolean verified;
         String message;
-        final List<BreakpointRequest> requests = new ArrayList<>();
+
+        /**
+         * Requests, kept per class name rather than in one list.
+         *
+         * <p>A class can be prepared more than once in the life of a session. Spring
+         * Boot devtools restarts the application in a new class loader whenever the
+         * classpath changes, which prepares every application class again -- and the
+         * standing ClassPrepareRequest fires again, so the breakpoint rebinds to the
+         * new class by itself. Measured: a breakpoint hit, a restart, and the same
+         * breakpoint hit again with no intervention.
+         *
+         * <p>What that leaves behind is the previous requests, pointing at classes
+         * nobody can reach any more, two of them per restart. Keying by name lets
+         * the old ones go when the name comes back.
+         */
+        final Map<String, List<BreakpointRequest>> requestsByClass = new LinkedHashMap<>();
 
         Bp(int id, int requestedLine, int line) {
             this.id = id;
             this.requestedLine = requestedLine;
             this.line = line;
+        }
+
+        List<BreakpointRequest> allRequests() {
+            List<BreakpointRequest> all = new ArrayList<>();
+            for (List<BreakpointRequest> perClass : requestsByClass.values()) {
+                all.addAll(perClass);
+            }
+            return all;
         }
     }
 
@@ -204,11 +227,30 @@ public final class BreakpointBinder {
         }
 
         boolean wasVerified = bp.verified;
+        // The same class name coming back means it was prepared again -- a devtools
+        // restart, most often. Its old requests point into a class loader nobody
+        // holds any more, so let them go before arming the new ones.
+        List<BreakpointRequest> previous = bp.requestsByClass.remove(type.name());
+        if (previous != null) {
+            log.accept(String.format("%s was prepared again; dropping %d stale request(s)",
+                    type.name(), previous.size()));
+            for (BreakpointRequest stale : previous) {
+                owners.remove(stale);
+                try {
+                    erm.deleteEventRequest(stale);
+                } catch (RuntimeException e) {
+                    // the VM has already discarded it along with the class
+                }
+            }
+        }
+
+        List<BreakpointRequest> installed = new ArrayList<>();
+        bp.requestsByClass.put(type.name(), installed);
         for (Location location : locations) {
             BreakpointRequest request = erm.createBreakpointRequest(location);
             request.setSuspendPolicy(EventRequest.SUSPEND_ALL);
             request.enable();
-            bp.requests.add(request);
+            installed.add(request);
             owners.put(request, bp);
             log.accept(String.format("bound %s:%d -> %s.%s (bci %d)",
                     state.ref.fileName(), line, type.name(),
@@ -263,7 +305,7 @@ public final class BreakpointBinder {
 
     private void removeAll(SourceState state) {
         for (Bp bp : state.breakpoints) {
-            for (BreakpointRequest request : bp.requests) {
+            for (BreakpointRequest request : bp.allRequests()) {
                 owners.remove(request);
                 try {
                     erm.deleteEventRequest(request);
@@ -271,7 +313,7 @@ public final class BreakpointBinder {
                     // The VM may already be gone; there is nothing to clean up then.
                 }
             }
-            bp.requests.clear();
+            bp.requestsByClass.clear();
         }
         for (ClassPrepareRequest request : state.classPrepareRequests) {
             try {

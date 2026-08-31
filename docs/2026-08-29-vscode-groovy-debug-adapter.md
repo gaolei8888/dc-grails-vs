@@ -1016,10 +1016,25 @@ public class GroovyBpSpike {
   `bootRun.jvmArgs` 里加
   `'-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005'`。
   反过来,`suspend=y` 对调试**启动期代码**(BootStrap、init service)是刚需。
-- **devtools 会打断调试** —— 若项目依赖 `spring-boot-devtools`,classpath 一变就 restart,
-  新 classloader 会让已挂断点失效、需重新 attach。
+- **devtools 的 restart 不会打断调试(2026-08-31 实测,修正此前的说法)** ——
+  之前这里写的是「classpath 一变就 restart,新 classloader 会让已挂断点失效、需重新 attach」。
+  **那是没验证过的推断,而且是错的。**
 
-  **关不掉的坑(2026-08-30 实测)**:环境变量 `SPRING_DEVTOOLS_RESTART_ENABLED=false`
+  实测:断点命中 → `touch` 一个 class 文件触发 devtools restart(日志里
+  `[restartedMain]`、`Grails application running` 出现第二次)→ **同一个断点再次命中,
+  全程无需任何干预**。
+
+  原因是 restart 发生在**同一个 JVM 内**,只是换了 classloader,所以 JDWP 连接不断;
+  而 `setBreakpoints` 装的 `ClassPrepareRequest` 是**常驻**的,新 classloader 重新加载
+  同名类时会再次触发 `ClassPrepareEvent`,适配器照常在新类上装断点。
+
+  唯一需要处理的是旧请求的堆积:每次 restart 会多留下一组指向已死类的
+  `BreakpointRequest`。适配器现在按类名保存请求,同名类再次 prepare 时先删旧的
+  (日志:`... was prepared again; dropping 2 stale request(s)`)。
+
+  **suspend=y 仍然与 restart 无关** —— restart 不重开 JDWP 端口。
+
+  **关不掉的坑(2026-08-30 实测,这条仍然成立)**:环境变量 `SPRING_DEVTOOLS_RESTART_ENABLED=false`
   **无效**。实测日志里 devtools 照常初始化:
 
   ```
