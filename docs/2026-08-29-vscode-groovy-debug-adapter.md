@@ -565,15 +565,29 @@ STOP  index:9  bci 104 depth 56       ← 第 9 行的「中段」
 第 10 行从 115 开始)。`index()` 的行号表干净且单路径,不是双代码路径的问题。
 
 **结论**:在**一行的中段**创建的 `STEP_OVER` 请求会冲出整个方法体,而在**行首**创建的正常。
-从被调用方法返回时落在行中段是所有调试器的常态,所以这条不是我们的用法问题。怀疑与
-JDI class exclusion filter 的实现方式有关(bci 104 之后紧接着就是
-`ScriptBytecodeAdapter.castToType`,落在 `org.codehaus.groovy.*` 排除项里),但**未证实** ——
-把 filter 全部去掉的对照实验没能复现,因为没有 filter 时单步会逐帧爬过反射管道
-(depth 88→86→85→84→83→82…),10 步都回不到 controller。
+从被调用方法返回时落在行中段是所有调试器的常态,所以这不是我们的用法问题。
+
+**并且第 10、11 行确实执行了** —— 那次请求的 HTTP 响应是完整的
+(`plain=16`,`render` 也跑了)。所以不是异常展开,是**单步压根没为这两行产生事件**,
+直到帧弹出才报了一次。
+
+#### 两个已被证伪的假设(别再走这两条路)
+
+1. **~~JDI class exclusion filter 导致的~~** —— bci 104 之后紧接着就是
+   `ScriptBytecodeAdapter.castToType`(落在 `org.codehaus.groovy.*` 排除项里),看着很像。
+   实测:在行中段**不加任何 exclusion filter** 重发 `STEP_OVER`,**仍然**直接离开 `index` 帧,
+   只是现在能看见途经的反射帧(depth 56→54→53→52→51)。过滤器无关。
+2. **~~`addCountFilter(1)` 与 Step 修饰符冲突~~** —— 去掉 count filter 后行为完全不变。
+
+(顺带,第 1 条的对照实验证明了**过滤器是必需的**:没有过滤器时,从方法末行 `next` 一次要逐帧
+爬过 `NativeMethodAccessorImpl` → `Method.invoke` → `CachedMethod.invoke` →
+`MetaMethod.doMethodInvoke` → `ClosureMetaClass.invokeMethod` → `Closure.call` ×2 →
+`GrailsTransactionTemplate` → `CallSiteArray.defaultCall` → `AbstractCallSite.call` ×2,
+十几个停顿才回到调用方。)
 
 **影响**:step over 走到方法末行、返回调用方之后,再按一次会跳过调用方该行之后的剩余代码。
-**未修**。下一步应该试:检测「当前位置不是所在行的第一个 bci」,此时改用别的策略
-(例如先发一个不带 exclusion filter 的 `STEP_MIN`,把位置推到行首,再发正常的 `STEP_OVER`)。
+**未修**。还没试过的方向:用 `STEP_MIN`(字节码粒度)把位置从行中段推到行首再发 `STEP_OVER`;
+或者干脆不用 JDI 的 step,自己在目标行下临时断点(IntelliJ 在某些场景下就是这么做的)。
 
 **extension 侧接线**:`package.json` 加了 `contributes.breakpoints`(language `groovy`,
 **没有这一条 VSCode 根本不允许在 .groovy 上打断点**)、`contributes.debuggers`(type `groovy`)

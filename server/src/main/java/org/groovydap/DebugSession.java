@@ -381,12 +381,34 @@ public final class DebugSession {
         }
         StepRequest step = vm.eventRequestManager()
                 .createStepRequest(thread, StepRequest.STEP_LINE, depth);
+
+        // Class exclusion filters are what keep stepping affordable: without them
+        // one `next` off the end of a method crawls frame by frame through the
+        // reflection and metaclass plumbing -- measured at ten stops and still
+        // short of the caller. They are not the cause of the mid-line overshoot in
+        // design doc §7.3; dropping them there was tried and changed nothing.
         for (String exclude : stepExcludes) {
             step.addClassExclusionFilter(exclude);
         }
-        step.addCountFilter(1);
+        // No count filter: the request is deleted on its first event anyway, and
+        // a Count modifier on a Step is the kind of combination JVMs implement
+        // inconsistently.
         step.setSuspendPolicy(EventRequest.SUSPEND_ALL);
         step.enable();
+    }
+
+    /** A class the user did not write, by the same patterns JDI would have used. */
+    private boolean isFilteredClass(String className) {
+        for (String pattern : stepExcludes) {
+            if (pattern.endsWith("*")) {
+                if (className.startsWith(pattern.substring(0, pattern.length() - 1))) {
+                    return true;
+                }
+            } else if (className.equals(pattern)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void onPause(Map<String, Object> request) {
@@ -491,12 +513,14 @@ public final class DebugSession {
         ThreadReference thread = event.thread();
         traceLocation("step", thread, event.location());
 
-        if (event.location().lineNumber() < 0 && keepStepping(thread)) {
-            // Generated code with no line number table -- the callback that
-            // @Transactional synthesises around a method body, for one, which
-            // lives in the user's own source file and so cannot be filtered out by
-            // package name. Showing a frame with no position is worse than useless,
-            // so carry on stepping instead of stopping here.
+        boolean unusable = event.location().lineNumber() < 0
+                || isFilteredClass(event.location().declaringType().name());
+        if (unusable && keepStepping(thread)) {
+            // Nowhere worth stopping. Either generated code with no line number
+            // table -- the callback @Transactional synthesises around a method
+            // body, which lives in the user's own source file and so cannot be
+            // filtered out by package name -- or a frame the step filters cover but
+            // JDI was not asked to exclude, because the step started mid-line.
             requestStep(thread, stepDepths.getOrDefault(thread.uniqueID(), StepRequest.STEP_OVER));
             return null;
         }
