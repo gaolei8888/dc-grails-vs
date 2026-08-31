@@ -32,6 +32,9 @@ What that means in practice:
   down to the first line that can hold one, and says so.
 - Variables captured by a closure are shown as their values, not as the
   `groovy.lang.Reference` the compiler boxed them in.
+- A domain object shows its own properties. GORM's traits compile a field into
+  every domain class they touch, and a class with one property of its own arrives
+  carrying half a dozen of them; those are hidden, and `id` and `version` are not.
 - Stepping skips the framework: the Groovy runtime, reflection, the transaction
   template and the servlet container are stepped over rather than into.
 - **Exception breakpoints**, caught and uncaught, filtered the same way: it stops

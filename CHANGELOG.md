@@ -4,6 +4,15 @@
 
 ### Added
 
+- **A domain object in the variables pane shows its own properties.** GORM works
+  through Groovy traits, and a trait's fields are compiled into every implementing
+  class under a mangled name that carries no dollar sign, so the existing filter
+  did not catch them: a domain class with one property arrived carrying
+  `..._GormValidateable__errors`, `..._GormValidateable__skipValidate` and
+  `..._DirtyCheckable__$changedProperties`. `id` and `version` stay, being the
+  ones that mean something.
+- A null value shows its declared type rather than nothing, so an unsaved `id`
+  reads as `java.lang.Long` instead of as `null : null`.
 - **Grails: Debug Tests**, which runs `gradlew test --debug-jvm` and attaches to
   the test JVM. Spock specs could not be debugged at all before. The spec in the
   active editor is offered as the `--tests` filter, since a whole run stopping on

@@ -71,7 +71,7 @@ public final class Variables {
                     if (isSynthetic(local.name())) {
                         continue;
                     }
-                    out.add(describe(local.name(), values.get(local)));
+                    out.add(describe(local.name(), values.get(local), local.typeName()));
                 }
             } catch (Exception e) {
                 out.add(error(e));
@@ -108,7 +108,7 @@ public final class Variables {
                 }
                 Map<Field, Value> values = object.getValues(fields);
                 for (Field field : fields) {
-                    out.add(describe(field.name(), values.get(field)));
+                    out.add(describe(field.name(), values.get(field), field.typeName()));
                 }
             } catch (Exception e) {
                 out.add(error(e));
@@ -146,6 +146,10 @@ public final class Variables {
     private static final int MAX_ARRAY_ELEMENTS = 200;
     private static final String REFERENCE_CLASS = "groovy.lang.Reference";
 
+    /** package_with_underscores_TraitName__field, how Groovy names a trait field. */
+    private static final java.util.regex.Pattern TRAIT_FIELD =
+            java.util.regex.Pattern.compile("[a-z][A-Za-z0-9_]*_[A-Z][A-Za-z0-9]*__.+");
+
     private static final Set<String> BOXES = new HashSet<>(Arrays.asList(
             "java.lang.Integer", "java.lang.Long", "java.lang.Short", "java.lang.Byte",
             "java.lang.Double", "java.lang.Float", "java.lang.Boolean",
@@ -175,22 +179,46 @@ public final class Variables {
     }
 
     /**
-     * A Groovy local that the compiler introduced rather than the programmer.
-     * {@code this$0} and {@code $callSiteArray} carry a dollar sign; the rest are
-     * named outright.
+     * A field or local the compiler introduced rather than the programmer.
+     *
+     * <p>Three kinds. Groovy's own -- {@code this$0}, {@code $callSiteArray},
+     * {@code __$stMC} -- all carry a dollar sign. {@code metaClass} is named
+     * outright. And a trait's fields are compiled into every implementing class
+     * under a mangled name, {@code package_with_underscores_TraitName__field},
+     * which carries no dollar sign at all.
+     *
+     * <p>That third kind is most of what a GORM domain object shows. A domain
+     * class with one property of its own arrives carrying
+     * {@code org_grails_datastore_gorm_GormValidateable__errors},
+     * {@code org_grails_datastore_gorm_GormValidateable__skipValidate} and
+     * {@code org_grails_datastore_mapping_dirty_checking_DirtyCheckable__$changedProperties},
+     * none of which is the object as its author wrote it. Read off a compiled
+     * Grails 7.2.3 domain class.
      */
     static boolean isSynthetic(String name) {
         return name.indexOf('$') >= 0
                 || name.equals("metaClass")
-                || name.equals("__timeStamp");
+                || name.equals("__timeStamp")
+                || TRAIT_FIELD.matcher(name).matches();
     }
 
     private Map<String, Object> describe(String name, Value value) {
+        return describe(name, value, null);
+    }
+
+    /**
+     * @param declaredType what the source says it is, used when the value is null.
+     *     A null has no runtime type to report, and "null : null" says less than
+     *     the declaration does -- a domain object's unsaved id reads as
+     *     {@code java.lang.Long} rather than as nothing at all.
+     */
+    private Map<String, Object> describe(String name, Value value, String declaredType) {
         Value effective = unwrapReference(value);
         Map<String, Object> variable = new LinkedHashMap<>();
         variable.put("name", name);
         variable.put("value", render(effective));
-        variable.put("type", effective == null ? "null" : effective.type().name());
+        variable.put("type", effective != null ? effective.type().name()
+                : declaredType != null ? declaredType : "null");
         variable.put("variablesReference", handleFor(effective));
         return variable;
     }
