@@ -1,4 +1,4 @@
-# Grails
+# DC-Grails-VS
 
 > **Pre-release.** The debugger works: breakpoints bind in .groovy files, closures
 > included, and full sessions have been driven end to end against a Grails 7.2.3

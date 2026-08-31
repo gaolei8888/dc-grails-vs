@@ -1,8 +1,8 @@
 {
   "name": "grails-gradle-extension",
-  "displayName": "Grails",
+  "displayName": "DC-Grails-VS",
   "description": "Grails development for VS Code: breakpoints that actually bind in .groovy files, closures included, plus the Grails and Gradle commands.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "gaolei8888",
   "engines": {
     "vscode": "^1.63.0"
@@ -42,7 +42,7 @@
       "activitybar": [
         {
           "id": "grails",
-          "title": "Grails",
+          "title": "DC-Grails-VS",
           "icon": "media/grails.svg"
         }
       ]

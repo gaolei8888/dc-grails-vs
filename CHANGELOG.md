@@ -1,5 +1,13 @@
 # Change Log
 
+## 0.1.3 — pre-release
+
+### Changed
+
+- Named DC-Grails-VS rather than Grails, in the Marketplace listing, the
+  extensions list and the activity bar. "Grails" is the framework's name, not
+  this extension's.
+
 ## 0.1.2 — pre-release
 
 ### Added
