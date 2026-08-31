@@ -89,8 +89,11 @@ attach 模式下不需要解析 Groovy:`ReferenceType.locationsOfLine(n)` 就是
 
 **T1 余项**(文档 §7.3 有完整列表与实测数据):
 
-1. **编辑器里一次都没跑过** —— 全部验证都是脚本驱动的 DAP 客户端(scratchpad 的
-   `dapclient.js` + `runcase.sh`),Extension Development Host 里的实际体验完全未知。
+1. ~~编辑器里一次都没跑过~~ —— **已在 Extension Development Host 实跑通过**(2026-08-30,
+   见文档 §7.4):断点能下并转实心、闭包类加载后自动补装、变量面板正确、单请求总停顿 4 次
+   (去重生效)、多线程并发命中互不干扰。JVM 是 JDK 25。那一轮暴露并修掉了 4 个 harness
+   不可能发现的缺陷(裸 `gradlew.bat`、变量面板静态字段、toolchain、Stop 不杀应用 JVM)。
+   仍未验:编辑器里的单步手感(没按过 F10/F11)。
 2. **已定位未修**:从**行中段**发起的 step over 会冲出整个方法体(两个假设已被实验证伪,
    见 §7.3「遗留缺陷」)。
 3. **已知限制**:`stepIn` 步不进 `@Transactional` 方法;`stepOut` 只经过编译没实测;

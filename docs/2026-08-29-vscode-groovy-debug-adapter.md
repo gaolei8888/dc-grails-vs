@@ -1,6 +1,6 @@
 # VSCode Groovy 断点绑定 —— 根因、IntelliJ 参照实现与 DAP 方案
 
-> 状态:**设计完成;T0 spike 验收 1–5 全部通过**(见 §7.0、§7.2)。下一步是开 `server/` 进 T1。
+> 状态:**T0 全部通过;T1 的 DAP server 已实现,并在 Extension Development Host 里实跑通过**(见 §7.2、§7.3、§7.4)。
 > 日期:2026-08-29(创建) / 2026-08-30(T0 结果、第 5 条实机复验、决策更新、迁入本仓库)
 > 实现仓库:**本仓库** `dc-grails-vs`(不新建仓库)
 > 本文是交接文档,面向"另开 session 直接开工"的场景,证据锚点全部为本机实测。
@@ -636,10 +636,43 @@ index:8 (断点) → index:8 → index:9 → index:9 → index:10 → SpikeServi
 注册 `DebugAdapterDescriptorFactory`,用 `java --add-modules jdk.jdi -jar dist/groovy-dap.jar`
 拉起,并用 `DebugConfigurationProvider` 自动填 `sourcePaths`。
 
+### 7.4 编辑器实跑(2026-08-30)—— 通过
+
+以上全部验证都是脚本驱动的 DAP 客户端。**在 Extension Development Host 里真跑了一轮**,
+靶子同上(空白 Grails 7.2.3),JVM 是 **JDK 25.0.4.1**(不是构建用的 17,顺带证明 adapter
+不挑运行时 JDK)。
+
+| 验的东西 | 结果 |
+|---|---|
+| `.groovy` 上能不能下断点 | **能** —— `contributes.breakpoints` 生效 |
+| attach | 通过,`attached to localhost:5005 (… VM 25.0.4.1)` |
+| 断点由空心变实心 | 通过 |
+| 第 23 行(闭包体)在类加载前 | 保持空心,Debug Console 无 bound 行 —— **正确**,闭包类要等外层方法执行到 `each` 才加载 |
+| 执行到闭包后 | 自动出现 `bound …:23 -> SpikeService$__tt__transactionalMethod_closure5.doCall (bci 5)`,断点转实心 —— `ClassPrepareRequest` 补装在 UI 下成立 |
+| 变量面板 | `seed = 4`、`base = 0` —— `Reference` 解包与装箱值渲染正常 |
+| **单个请求的总停顿次数** | **4 次**(第 20 行 1 次 + 第 23 行 3 次)。第 20 行有 bci 20/79 两处,**去重生效**;若失效应是 5 次 |
+| 多线程同时命中 | 通过 —— 两个并发请求各自停在第 20 行,Call Stack 分别显示 `http-nio-8080-exec-9/-10`,互不干扰 |
+
+#### 编辑器暴露、harness 暴露不了的四个缺陷(均已修)
+
+1. **`gradlew.bat` 用裸文件名 spawn** —— `shell:true` 下 cmd.exe 不会可靠地从工作目录解析
+   命令名,报 `'gradlew.bat' is not recognized`。同一个坑在 `scripts/build-server.js` 里踩过
+   并改成了绝对路径,却没同步到 `extension.js`。
+2. **变量面板展开装箱值吐出一堆静态常量** —— `allFields()` 含静态字段与继承链重名字段,
+   展开 `base` 会列出 `MIN_VALUE`/`MAX_VALUE`/`TYPE`/`digits`/`SIZE`/`BYTES` 和两个
+   `serialVersionUID`。**harness 只打印栈帧顶层、从不展开值,所以不可能发现这条。**
+3. **Java toolchain 在 JDK 25 上找不到 17** —— `Cannot find a Java installation matching
+   {languageVersion=17}`。toolchain 只在 Gradle 认识的位置找 JDK。改用
+   `options.release = 17`。
+4. **Stop 命令不杀应用 JVM** —— `proc.kill()` 只到我们 spawn 的那个进程,Gradle fork 出的
+   应用 JVM 活着占住 5005 和 8080,一次会话攒了 3 个孤儿,下次启动报
+   `transport error 202: bind failed`,看起来像端口没释放而不像应用没停。改用
+   `taskkill /T`(Windows)/ 进程组信号(其余平台)。
+
 **还没做的 T1 余项**:
 
-1. **编辑器里没跑过** —— 上面全部是脚本驱动的验证。Extension Development Host 里的实际
-   体验(断点图标、变量面板渲染、单步手感)未验。
+1. **编辑器里的单步手感未验** —— `next`/`stepIn` 的行为已在 harness 上验过(§7.3),但没在
+   Extension Development Host 里按过 F10/F11。
 2. **`next` 与 `stepIn` 已实机验证,`stepOut` 仍只经过编译**;有一个已定位、未修的缺陷:
    **从行中段发起的 step over 会冲出整个方法体**(见上方「遗留缺陷」);`stepIn` 步不进
    `@Transactional` 方法(见上方「step filter」)。
