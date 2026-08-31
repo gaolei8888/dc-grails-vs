@@ -1,6 +1,6 @@
 # Change Log
 
-## 0.2.0 — pre-release
+## 0.1.7 — pre-release
 
 ### Added
 
