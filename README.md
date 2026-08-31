@@ -1,11 +1,10 @@
-# Grails & Gradle
+# Grails
 
 > **Pre-release.** The debugger works: breakpoints bind in .groovy files, closures
 > included, and full sessions have been driven end to end against a Grails 7.2.3
 > application. But it has been exercised on one application, on Windows, by one
 > person. Expect to find things. Known gaps are listed at the bottom; the issue
 > tracker is [on GitHub](https://github.com/gaolei8888/dc-grails-vs/issues).
-
 
 Grails and Gradle commands from the command palette and a sidebar tree — and a
 debugger that can actually stop on a line of Groovy.
@@ -63,17 +62,21 @@ configuration:
 ## Debugging tests
 
 **Grails: Debug Tests** runs `gradlew test --debug-jvm` and attaches to the test
-JVM, which is the same machinery the application uses -- Gradle forks it with the
+JVM, which is the same machinery the application uses — Gradle forks it with the
 same agent on the same port and announces it on the same stream. It offers the
 spec in the active editor as the filter, so debugging the failure you are looking
 at is one command; leave the box empty to debug the whole run.
 
 ## Commands
 
-199 Grails and Gradle commands are registered. The ones people reach for are in
-the **Grails** view in the activity bar, grouped into Run, Create, Generate,
-Database Migration and Gradle; the rest are in the command palette under `Grails:`
-and `Gradle:`.
+Every Grails command and Gradle task this project knows about is registered — 201
+of them. The ones people reach for are in the **Grails** view in the activity bar,
+under Run, Create (empty), Scaffold from domain class, Database Migration and
+Gradle; the rest are in the command palette under `Grails:` and `Gradle:`.
+
+Create and Scaffold are not the same thing. `create-controller` writes an empty
+controller; `generate-controller` scaffolds one, actions and all, from a domain
+class that already exists — which is why every entry under Scaffold asks for one.
 
 Run, Debug and Stop are also in the status bar, in green and red. While a build is
 running the pair is replaced by a spinner that turns into a check and the address
