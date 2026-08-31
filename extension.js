@@ -853,11 +853,17 @@ function activate(context) {
       if (attached) return;
       attached = true;
       clearTimeout(giveUp);
+      // Into the same channel as the build, because when an attach does not
+      // happen the only visible symptom is an application sitting suspended
+      // forever, and nothing anywhere says why.
+      const log = outputChannel('Grails - Debug');
+      log.appendLine('[grails] JVM is listening on ' + port + ', starting the '
+        + adapterType + ' debug session');
       try {
         // type 'groovy' is this extension's adapter; 'java' hands the session to
         // vscode-java-debug, which cannot bind breakpoints in .groovy files
         // because it resolves class names through JDT. Kept as an escape hatch.
-        await vscode.debug.startDebugging(vscode.workspace.workspaceFolders[0], {
+        const started = await vscode.debug.startDebugging(vscode.workspace.workspaceFolders[0], {
           name: 'Attach to Grails',
           type: adapterType,
           request: 'attach',
@@ -865,9 +871,20 @@ function activate(context) {
           port,
           sourcePaths: defaultSourcePaths(workspaceFolder)
         });
+        if (!started) {
+          // It returns false rather than throwing when it declines, which
+          // otherwise looks exactly like everything having worked.
+          log.appendLine('[grails] startDebugging returned false -- no session');
+          vscode.window.showErrorMessage(
+            'VSCode declined to start the groovy debug session. See the '
+            + '"Grails - Debug" output for details.');
+          return;
+        }
+        log.appendLine('[grails] debug session started');
         vscode.window.showInformationMessage(
           `Debugger attached to Grails on port ${port} (${adapterType} adapter).`);
       } catch (err) {
+        log.appendLine('[grails] startDebugging failed: ' + err.message);
         vscode.window.showErrorMessage(`Failed to attach debugger: ${err.message}`);
       }
     };
@@ -902,6 +919,8 @@ function activate(context) {
     giveUp = setTimeout(() => {
       if (attached) return;
       attached = true;
+      outputChannel('Grails - Debug').appendLine(
+        '[grails] gave up: the JVM never reported that it was listening');
       vscode.window.showErrorMessage(
         `Gave up waiting for the JVM to open its debug port after ${JDWP_WAIT_MS / 1000}s. ` +
         'See the "Grails - Debug" output channel.'
