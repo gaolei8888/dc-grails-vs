@@ -15,8 +15,15 @@ const JDWP_READY_RE = /Listening for transport dt_socket at address:\s*(\d+)/;
 // How long to wait for that line before giving up (cold start + full compile).
 const JDWP_WAIT_MS = 300000;
 
-function gradleWrapper() {
-  return process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+/**
+ * Absolute path to the project's Gradle wrapper.
+ *
+ * Absolute, not a bare `gradlew.bat`: cmd.exe does not reliably resolve a command
+ * name against the working directory, so a bare name fails with "'gradlew.bat' is
+ * not recognized" even when the file is sitting right there.
+ */
+function gradleWrapperPath(cwd) {
+  return path.join(cwd, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew');
 }
 
 function requireWorkspace(what) {
@@ -76,10 +83,21 @@ function spawnBuild(options) {
   const commandLine = options.commandLine || '';
   const settings = launchSettings();
   const env = childEnvironment(settings.env);
+  const wrapper = gradleWrapperPath(options.cwd);
+
+  // Name the folder that is wrong rather than letting the shell report a missing
+  // command. Opening the directory *above* the project is an easy mistake, and
+  // "'gradlew.bat' is not recognized" points nowhere near it.
+  if (!commandLine && !fs.existsSync(wrapper)) {
+    vscode.window.showErrorMessage(
+      `No Gradle wrapper in ${options.cwd}. Open the folder that contains gradlew `
+      + '(the Grails project root), or set grails.run.command.');
+    return null;
+  }
 
   const channel = vscode.window.createOutputChannel(options.channelName);
   channel.show(true);
-  channel.appendLine('> ' + (commandLine || gradleWrapper() + ' ' + args.join(' ')));
+  channel.appendLine('> ' + (commandLine || wrapper + ' ' + args.join(' ')));
   const injected = Object.keys(settings.env);
   if (injected.length > 0) {
     channel.appendLine('  (with grails.run.env: ' + injected.join(', ') + ')');
@@ -90,9 +108,15 @@ function spawnBuild(options) {
   // configured command line is a shell command by definition. The only user input
   // that reaches here is grails.run.command, whose whole purpose is to be the
   // command that runs.
+  // A configured command line is a shell command by definition, so it goes through
+  // a shell. The wrapper does not: it is an absolute path, and cmd.exe runs the
+  // .bat directly, which also keeps a path containing spaces intact.
   const proc = commandLine
     ? spawn(commandLine, { cwd: options.cwd, shell: true, env })
-    : spawn(gradleWrapper(), args, { cwd: options.cwd, shell: true, env });
+    : process.platform === 'win32'
+      ? spawn('cmd.exe', ['/d', '/s', '/c', wrapper].concat(args),
+              { cwd: options.cwd, env })
+      : spawn(wrapper, args, { cwd: options.cwd, env });
 
   const onLine = options.onLine;
   let pending = '';
@@ -110,7 +134,7 @@ function spawnBuild(options) {
   proc.on('error', err => {
     channel.appendLine(`\n[failed to start] ${err.message}`);
     vscode.window.showErrorMessage(
-      `Could not run ${commandLine || gradleWrapper()}: ${err.message}`);
+      `Could not run ${commandLine || wrapper}: ${err.message}`);
   });
   return proc;
 }
@@ -250,6 +274,9 @@ function runGrailsCommandViaGradle(commandName, promptForArgs = true) {
       cwd: workspaceFolder,
       channelName: `Gradle: ${commandName}`
     });
+    if (!proc) {
+      return; // spawnBuild already said what was wrong
+    }
     proc.on('close', code => {
       vscode.window.showInformationMessage(`Task '${commandName}' exited with code ${code}`);
     });
@@ -286,6 +313,9 @@ function activate(context) {
       cwd: workspaceFolder,
       channelName: 'Grails - Normal'
     });
+    if (!gradleRunProcess) {
+      return; // spawnBuild already said what was wrong
+    }
     gradleRunProcess.on('close', code => {
       vscode.window.showInformationMessage(`Grails (normal) exited with code ${code}`);
       gradleRunProcess = null;
@@ -375,6 +405,10 @@ function activate(context) {
         if (m) attach(Number(m[1]));
       }
     });
+
+    if (!gradleDebugProcess) {
+      return; // spawnBuild already said what was wrong
+    }
 
     giveUp = setTimeout(() => {
       if (attached) return;
