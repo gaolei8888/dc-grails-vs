@@ -56,25 +56,33 @@ public final class DebugSession {
      * {@code CachedMethod.invoke} and {@code ClosureMetaClass.invokeMethod}.
      */
     private static final List<String> DEFAULT_STEP_EXCLUDES = List.of(
-        "org.codehaus.groovy.*",
-        "groovy.lang.*",
-        "groovy.util.*",
-        "java.lang.invoke.*",
-        "java.lang.reflect.*",
-        "jdk.internal.reflect.*",
-        "sun.reflect.*",
-        // Stepping off the end of a @Transactional method lands in the template
-        // that wraps it -- measured against Grails 7.2.3, where step-over out of
-        // the method walked into GrailsTransactionTemplate and then Spring's
-        // TransactionTemplate.
-        "grails.gorm.transactions.*",
-        "org.grails.datastore.*",
-        "org.springframework.transaction.*",
-        "org.springframework.aop.*",
-        "org.springframework.cglib.*");
+        // The JDK. Step into is otherwise unusable in Groovy: every value that
+        // crosses a call site is boxed, so the first stepIn on a line of ordinary
+        // Groovy lands in Integer.valueOf, and the next in String.equals.
+        "java.*", "javax.*", "jakarta.*", "sun.*", "jdk.*", "com.sun.*",
+        // The Groovy runtime. A plain call is dispatched through an invokedynamic
+        // call site, a closure call through the metaclass; both were measured in
+        // the T0 spike and both bury the frame the user wants.
+        // groovyjarjar* is Groovy's shaded ASM and friends: the first call through
+        // a given call site generates a class at run time, so step into lands in a
+        // bytecode writer if this is missing.
+        "groovy.*", "org.codehaus.groovy.*", "org.apache.groovy.*",
+        "groovyjarjar*", "org.objectweb.asm.*",
+        // Grails' own plumbing. Stepping off the end of a @Transactional method
+        // walks into the transaction template, and off the end of a controller
+        // action into the MVC dispatcher.
+        "grails.gorm.transactions.*", "org.grails.*", "org.springframework.*",
+        // Everything else a Grails request touches on its way through. This list
+        // is only about cost: isOutsideProject decides where it is worth stopping,
+        // but a pattern here stops the VM generating the event at all, and each
+        // event it does generate is a round trip. All of these were measured being
+        // stepped through.
+        "org.slf4j.*", "ch.qos.logback.*", "org.hibernate.*", "com.zaxxer.*",
+        // The servlet container, which is what a controller action returns into.
+        "org.apache.tomcat.*", "org.apache.catalina.*", "org.apache.coyote.*");
 
-    /** Guard against stepping forever through generated code with no line table. */
-    private static final int MAX_AUTOMATIC_RESTEPS = 200;
+    /** Guard against stepping forever through code the user cannot see. */
+    private static final int MAX_AUTOMATIC_RESTEPS = 500;
 
     private final DapTransport transport;
 
@@ -95,8 +103,10 @@ public final class DebugSession {
     private volatile boolean configured;
 
     private List<String> stepExcludes = DEFAULT_STEP_EXCLUDES;
+    private boolean projectCodeOnly = true;
     private boolean trace;
     private final Map<Long, Integer> stepDepths = new ConcurrentHashMap<>();
+    private final Map<Long, Integer> stepOriginFrames = new ConcurrentHashMap<>();
     private final Map<Long, Integer> restepBudget = new ConcurrentHashMap<>();
 
     public DebugSession(InputStream in, OutputStream out) {
@@ -173,6 +183,9 @@ public final class DebugSession {
         binder = new BreakpointBinder(vm, this::log, this::sendBreakpointChanged);
         sources = new SourceLocator(strings(args.get("sourcePaths")));
         trace = Boolean.TRUE.equals(args.get("trace"));
+        if (args.containsKey("stepIntoProjectCodeOnly")) {
+            projectCodeOnly = Boolean.TRUE.equals(args.get("stepIntoProjectCodeOnly"));
+        }
         List<String> configuredExcludes = strings(args.get("stepFilters"));
         if (!configuredExcludes.isEmpty()) {
             stepExcludes = configuredExcludes;
@@ -365,6 +378,7 @@ public final class DebugSession {
             return;
         }
         stepDepths.put(thread.uniqueID(), depth);
+        stepOriginFrames.put(thread.uniqueID(), frameCountOf(thread));
         restepBudget.put(thread.uniqueID(), MAX_AUTOMATIC_RESTEPS);
         requestStep(thread, depth);
 
@@ -395,6 +409,29 @@ public final class DebugSession {
         // inconsistently.
         step.setSuspendPolicy(EventRequest.SUSPEND_ALL);
         step.enable();
+    }
+
+    /**
+     * Code the user cannot see, judged by whether its source file is under one of
+     * the configured source roots.
+     *
+     * <p>A package blacklist never ends. Stepping into one line of ordinary Groovy
+     * was measured landing in {@code Integer.valueOf}, then -- once the JDK was
+     * excluded -- in Groovy's shaded ASM, because the first call through a call
+     * site generates a class at run time, and then in
+     * {@code org.slf4j.LoggerFactory}, because a Grails service initialises its
+     * log field on first use. Each of those needed another pattern, and the next
+     * dependency would need one more.
+     *
+     * <p>Whether the file is in the project answers the same question once and for
+     * anything. The package filters stay as the cheap first pass: they stop the VM
+     * from generating most of these events at all, which is what keeps stepping
+     * affordable. Set {@code stepIntoProjectCodeOnly} to false to step into
+     * dependencies, e.g. in a multi-module build whose sibling modules are not on
+     * {@code sourcePaths}.
+     */
+    private boolean isOutsideProject(Location location) {
+        return projectCodeOnly && sources.find(location) == null;
     }
 
     /** A class the user did not write, by the same patterns JDI would have used. */
@@ -514,14 +551,25 @@ public final class DebugSession {
         traceLocation("step", thread, event.location());
 
         boolean unusable = event.location().lineNumber() < 0
-                || isFilteredClass(event.location().declaringType().name());
+                || isFilteredClass(event.location().declaringType().name())
+                || isOutsideProject(event.location());
         if (unusable && keepStepping(thread)) {
-            // Nowhere worth stopping. Either generated code with no line number
-            // table -- the callback @Transactional synthesises around a method
-            // body, which lives in the user's own source file and so cannot be
-            // filtered out by package name -- or a frame the step filters cover but
-            // JDI was not asked to exclude, because the step started mid-line.
-            requestStep(thread, stepDepths.getOrDefault(thread.uniqueID(), StepRequest.STEP_OVER));
+            // Nowhere worth stopping: generated code with no line number table --
+            // the callback @Transactional synthesises around a method body, which
+            // lives in the user's own source file and so cannot be filtered out by
+            // package name -- or a frame outside the project.
+            //
+            // Climb out rather than stepping line by line. Walking a library one
+            // line at a time costs a round trip per line and, measured against
+            // logback and Hibernate on the way into a Grails service, ran through a
+            // 200-step budget without reaching the far side. Stepping out of the
+            // frame converges in a handful of events instead.
+            long id = thread.uniqueID();
+            int origin = stepOriginFrames.getOrDefault(id, 0);
+            int depth = frameCountOf(thread) > origin
+                    ? StepRequest.STEP_OUT
+                    : stepDepths.getOrDefault(id, StepRequest.STEP_OVER);
+            requestStep(thread, depth);
             return null;
         }
 
@@ -550,6 +598,14 @@ public final class DebugSession {
         log(String.format("%s event: %s.%s line %d bci %d depth %d thread %s",
                 kind, location.declaringType().name(), location.method().name(),
                 location.lineNumber(), location.codeIndex(), depth, safeThreadName(thread)));
+    }
+
+    private int frameCountOf(ThreadReference thread) {
+        try {
+            return thread.frameCount();
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     /** @return false once a single user step has re-stepped too many times. */

@@ -589,6 +589,47 @@ STOP  index:9  bci 104 depth 56       ← 第 9 行的「中段」
 **未修**。还没试过的方向:用 `STEP_MIN`(字节码粒度)把位置从行中段推到行首再发 `STEP_OVER`;
 或者干脆不用 JDI 的 step,自己在目标行下临时断点(IntelliJ 在某些场景下就是这么做的)。
 
+#### step filter:两层,而不是一张黑名单
+
+`stepIn` 的第一版能用但没法用。从 controller 第 8 行 `stepIn`,落点依次是:
+
+| 加了什么过滤 | 下一个落点 |
+|---|---|
+| (初版:Groovy 运行时 + 反射) | `java.lang.Integer.valueOf` —— Groovy 每个值过 call site 都装箱 |
+| + `java.*` 等 JDK | `groovyjarjarasm.asm.ClassWriter` —— call site 第一次调用会**运行时生成类** |
+| + `groovyjarjar*` | `org.slf4j.LoggerFactory` —— Grails service 首次使用时初始化 `log` 字段 |
+| + `org.slf4j.*` | 下一个依赖…… |
+
+黑名单没有尽头。**换成一条有原则的规则:落点的源文件如果不在配置的 `sourcePaths` 下,
+那按定义就不是用户能看的代码**(`isOutsideProject`,复用了本来就要有的 `SourceLocator`)。
+一条规则一次覆盖 JDK、ASM、slf4j、Tomcat、Grails 内部和所有第三方依赖。
+
+于是过滤变成两层,职责分开:
+
+- **JDI 的 class exclusion filter —— 只为成本。** 命中的类 VM 根本不产生 step 事件;
+  每产生一个就是一次 JDWP 往返。列表按实测扩充(JDK、Groovy 运行时与其 shaded ASM、
+  `org.grails.*`、`org.springframework.*`、slf4j/logback/hibernate)。
+- **`isOutsideProject` —— 决定值不值得停。** 正确性只由它保证,所以上面那张表漏了什么都不致命。
+  attach 参数 `stepIntoProjectCodeOnly: false` 可关掉(多模块项目里想进兄弟模块时)。
+
+**还有一条同样重要:落在项目外时不能继续逐行单步,要往外爬。** 逐行走一遍库代码是每行一次
+往返 —— 实测进一次 Grails service,在 logback 和 Hibernate 里就把 200 步的预算耗光了,最后停在
+`ch.qos.logback.classic.Logger.getChildByName`。改成「比起点深就 `STEP_OUT`,否则 `STEP_OVER`」
+之后,几个事件就收敛。
+
+**`stepIn` 实测结果**(controller 第 8 行起,连续 5 次):
+
+```
+index:8 (断点) → index:8 → index:9 → index:9 → index:10 → SpikeService.plainMethod:34
+```
+
+全部落在项目代码里,并且成功**步入了 service 方法**。同一行出现两次是正常的:第一次
+`stepIn` 穿过被过滤的调用又回到原行(调用已完成),第二次才前进 —— 与主流调试器一致。
+
+**已知限制**:步不进 `@Transactional` 方法。它的入口要穿过事务模板(非项目帧),爬出规则会把你
+带回调用行。IntelliJ 对被过滤类里回调的用户代码也是同样的行为;绕过办法是直接在目标方法里下
+断点。
+
 **extension 侧接线**:`package.json` 加了 `contributes.breakpoints`(language `groovy`,
 **没有这一条 VSCode 根本不允许在 .groovy 上打断点**)、`contributes.debuggers`(type `groovy`)
 和两个设置(`grails.debug.adapter` 默认 `groovy`,`grails.debug.javaPath`);`extension.js`
@@ -599,8 +640,9 @@ STOP  index:9  bci 104 depth 56       ← 第 9 行的「中段」
 
 1. **编辑器里没跑过** —— 上面全部是脚本驱动的验证。Extension Development Host 里的实际
    体验(断点图标、变量面板渲染、单步手感)未验。
-2. **`next` 已实机验证(见上方「单步」),但 `stepIn` / `stepOut` 仍只经过编译**;且有一个已
-   定位、未修的缺陷:**从行中段发起的 step over 会冲出整个方法体**(见上方「遗留缺陷」)。
+2. **`next` 与 `stepIn` 已实机验证,`stepOut` 仍只经过编译**;有一个已定位、未修的缺陷:
+   **从行中段发起的 step over 会冲出整个方法体**(见上方「遗留缺陷」);`stepIn` 步不进
+   `@Transactional` 方法(见上方「step filter」)。
 3. `evaluate` / 条件断点 —— 属 T2。
 4. 多 `EventSet` 并发命中(多线程同时停)的行为未验。
 
