@@ -25,9 +25,11 @@
 ### Fixed
 
 - **All 199 commands ran the wrong thing.** They built `gradlew -Pargs="<name>"`,
-  which sets a project property and names no task, so Gradle ran its default task.
-  Grails' own CLI commands now go through the plugin's `runCommand` task and Gradle
-  tasks are passed as tasks.
+  which sets a project property and names no task, so Gradle ran its default task
+  and printed help. Gradle tasks are passed as tasks now, and Grails' own commands
+  go to `grailsw`, the Grails CLI wrapper that projects carry next to `gradlew` --
+  code generation is not a Gradle task at all, and asking Gradle for one answers
+  "Command not found for name: create-controller".
 - **Debug attached on a three second timer**, which loses to Gradle's configure and
   compile phases on a cold start. It now waits for the JVM to report that it is
   listening, and takes the port from that line.

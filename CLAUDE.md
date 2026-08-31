@@ -126,13 +126,16 @@ attach 模式下不需要解析 Groovy:`ReferenceType.locationsOfLine(n)` 就是
    `grails.run.args`(附加给 bootRun 的参数)。
 4. ~~**199 条命令一条都没真正执行**~~ —— helper 拼的是 `gradlew -Pargs="<name>"`,
    **完全没有任务名**;`-P` 只设项目属性,Gradle 于是回落到默认任务(未配置即 `help`)。
-   已按名字形态分流:带连字符的是 Grails CLI 命令(`create-controller` 等),走插件的
-   `runCommand` 任务 + `-Pargs="<命令行>"`;其余是真正的 Gradle 任务名,直接作为任务传。
-   顺带:输入框按 Esc 取消现在会中止,以前会照跑。
+   已按名字形态分流:**带连字符的走 `grailsw`**(Grails CLI wrapper,Grails 3+ 生成的项目
+   都自带,首次使用会自己下载对应版本的 CLI);其余是真正的 Gradle 任务名,走 `gradlew`。
+   顺带:输入框按 Esc 取消现在会中止,以前会照跑;参数现在作为独立 argv 传,不再需要拼
+   `-Pargs="..."` 那种带引号的单字符串。
 
-   **已在 Grails 7.2.3 上实测**(`--dry-run`):老形式 `gradlew -Pargs="build"` 只跑出
-   `:help SKIPPED`;新形式 `gradlew build` 展开完整构建图,`gradlew runCommand
-   -Pargs="create-controller Foo"` 解析到 `:runCommand`。
+   **已在 Grails 7.2.3 上实测**:老形式 `gradlew -Pargs="build"` 只跑出 `:help SKIPPED`;
+   `gradlew runCommand -Pargs="create-controller Book"` 报
+   **`Command not found for name: create-controller`** —— `runCommand` 跑的是应用自己的
+   `ApplicationCommand`,代码生成命令不是那类东西;而
+   `grailsw create-controller Book` 真正生成了 `BookController.groovy` 与其 Spec。
 
 **注意:第 1–3 条只做到语法检查通过,没有在编辑器里实跑过。** 第 4 条的命令行形态已在真实
 Grails 项目上验过,但同样没有从 VSCode UI 走过一遍。
