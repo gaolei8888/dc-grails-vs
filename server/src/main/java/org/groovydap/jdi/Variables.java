@@ -143,6 +143,141 @@ public final class Variables {
         }
     }
 
+    /**
+     * A chosen set of an object's fields, in a chosen order.
+     *
+     * <p>For the Grails scope: a GrailsWebRequest has twenty-odd fields and four of
+     * them are what anyone stopped in a controller wants. A null one is still
+     * listed -- a null session says nothing has touched the session yet, which is
+     * worth knowing.
+     */
+    private final class CuratedFields extends Node {
+        final ObjectReference object;
+        final List<String> names;
+
+        CuratedFields(ObjectReference object, List<String> names) {
+            this.object = object;
+            this.names = names;
+        }
+
+        @Override
+        List<Map<String, Object>> children() {
+            List<Map<String, Object>> out = new ArrayList<>();
+            try {
+                for (String name : names) {
+                    Field field = object.referenceType().fieldByName(name);
+                    if (field == null) {
+                        continue;
+                    }
+                    out.add(describe(name, object.getValue(field), field.typeName()));
+                }
+            } catch (Exception e) {
+                out.add(error(e));
+            }
+            return out;
+        }
+    }
+
+    /**
+     * A map shown as its entries.
+     *
+     * <p>Without this, {@code params} in a Grails controller is three levels of
+     * plumbing: a GrailsParameterMap wrapping a LinkedHashMap whose fields are a
+     * table, a size and a modCount. What the user asked to see is which parameters
+     * came in.
+     *
+     * <p>Walked, not invoked. A HashMap keeps its entries in a table of nodes with
+     * a next chain, and reading it is a handful of field reads -- where calling
+     * entrySet() would mean running code in the application to describe it.
+     * ConcurrentHashMap uses the same shape with the value field named val.
+     */
+    private final class MapEntries extends Node {
+        final ObjectReference map;
+
+        MapEntries(ObjectReference map) {
+            this.map = map;
+        }
+
+        @Override
+        List<Map<String, Object>> children() {
+            List<Map<String, Object>> out = new ArrayList<>();
+            try {
+                ArrayReference table = tableOf(map);
+                if (table == null) {
+                    return out;
+                }
+                for (Value slot : table.getValues()) {
+                    ObjectReference node = slot instanceof ObjectReference
+                            ? (ObjectReference) slot : null;
+                    int guard = 0;
+                    while (node != null && guard++ < 64 && out.size() < MAX_MAP_ENTRIES) {
+                        Field keyField = node.referenceType().fieldByName("key");
+                        Field valueField = valueFieldOf(node);
+                        if (keyField == null || valueField == null) {
+                            break;
+                        }
+                        out.add(describe(label(node.getValue(keyField)),
+                                node.getValue(valueField), null));
+                        Field nextField = node.referenceType().fieldByName("next");
+                        Value next = nextField == null ? null : node.getValue(nextField);
+                        node = next instanceof ObjectReference ? (ObjectReference) next : null;
+                    }
+                }
+                if (out.size() >= MAX_MAP_ENTRIES) {
+                    out.add(literal("...", "more entries not shown"));
+                }
+            } catch (Exception e) {
+                out.add(error(e));
+            }
+            return out;
+        }
+
+        private String label(Value key) {
+            return key instanceof StringReference
+                    ? ((StringReference) key).value() : String.valueOf(render(key));
+        }
+    }
+
+    private static final int MAX_MAP_ENTRIES = 200;
+
+    /** The entry table of a HashMap-shaped map, or null if this is not one. */
+    private static ArrayReference tableOf(ObjectReference object) {
+        Field table = object.referenceType().fieldByName("table");
+        if (table == null) {
+            return null;
+        }
+        Value value = object.getValue(table);
+        return value instanceof ArrayReference ? (ArrayReference) value : null;
+    }
+
+    /** HashMap calls it value; ConcurrentHashMap calls it val. */
+    private static Field valueFieldOf(ObjectReference node) {
+        Field field = node.referenceType().fieldByName("value");
+        return field != null ? field : node.referenceType().fieldByName("val");
+    }
+
+    /**
+     * The map a value really is, when it is wrapping one.
+     *
+     * <p>A GrailsParameterMap is not a HashMap; it holds one in {@code wrappedMap}
+     * alongside a request and a date cache. Showing the wrapper's fields answers a
+     * question nobody asked.
+     */
+    private static ObjectReference unwrapMap(ObjectReference object) {
+        if (tableOf(object) != null) {
+            return object;
+        }
+        Field wrapped = object.referenceType().fieldByName("wrappedMap");
+        if (wrapped == null) {
+            return null;
+        }
+        Value value = object.getValue(wrapped);
+        if (value instanceof ObjectReference && tableOf((ObjectReference) value) != null) {
+            return (ObjectReference) value;
+        }
+        return null;
+    }
+
     private static final int MAX_ARRAY_ELEMENTS = 200;
     private static final String REFERENCE_CLASS = "groovy.lang.Reference";
 
@@ -165,6 +300,11 @@ public final class Variables {
 
     public synchronized int localsHandle(ThreadReference thread, int frameIndex) {
         return register(new FrameLocals(thread, frameIndex));
+    }
+
+    /** A handle over just these fields of this object, in this order. */
+    public synchronized int curatedHandle(ObjectReference object, List<String> fieldNames) {
+        return register(new CuratedFields(object, fieldNames));
     }
 
     public synchronized List<Map<String, Object>> children(int handle) {
@@ -277,6 +417,10 @@ public final class Variables {
             if (BOXES.contains(object.referenceType().name())) {
                 return 0; // already shown as its value; there is nothing inside
             }
+            ObjectReference asMap = unwrapMap(object);
+            if (asMap != null) {
+                return register(new MapEntries(asMap));
+            }
             return register(new ObjectFields(object));
         }
         return 0;
@@ -296,6 +440,12 @@ public final class Variables {
         if (value instanceof ObjectReference) {
             ObjectReference object = (ObjectReference) value;
             String type = object.referenceType().name();
+            ObjectReference asMap = unwrapMap(object);
+            if (asMap != null) {
+                Field size = asMap.referenceType().fieldByName("size");
+                Value count = size == null ? null : asMap.getValue(size);
+                return type + (count == null ? "" : " (" + count + " entries)");
+            }
             String boxed = renderBoxed(object, type);
             if (boxed != null) {
                 return boxed;

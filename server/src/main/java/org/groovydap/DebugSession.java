@@ -27,6 +27,7 @@ import com.sun.jdi.request.ExceptionRequest;
 import com.sun.jdi.request.StepRequest;
 import org.groovydap.dap.DapTransport;
 import org.groovydap.jdi.BreakpointBinder;
+import org.groovydap.jdi.GrailsWebScope;
 import org.groovydap.jdi.SourceLocator;
 import org.groovydap.jdi.StopDeduper;
 import org.groovydap.jdi.Variables;
@@ -353,6 +354,19 @@ public final class DebugSession {
             locals.put("variablesReference", variables.localsHandle(thread, frameIndex));
             locals.put("expensive", Boolean.FALSE);
             scopes.add(locals);
+
+            // params, request and session are not locals of anything on the stack.
+            // They belong to the request, which Spring keeps in a thread local, so
+            // they get a scope of their own when the thread is serving one.
+            ObjectReference webRequest = GrailsWebScope.find(vm, thread);
+            if (webRequest != null) {
+                Map<String, Object> grails = new LinkedHashMap<>();
+                grails.put("name", "Grails");
+                grails.put("variablesReference",
+                        variables.curatedHandle(webRequest, GrailsWebScope.interestingFields()));
+                grails.put("expensive", Boolean.FALSE);
+                scopes.add(grails);
+            }
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("scopes", scopes);

@@ -1,5 +1,21 @@
 # Change Log
 
+## 0.2.0 — pre-release
+
+### Added
+
+- **A Grails scope in the variables pane**, beside Locals, whenever the stopped
+  thread is serving a request: `params`, `request`, `response`, `session`. These
+  are the things you are usually stopped to look at, and none of them is a local
+  or a field of anything on the stack — they belong to a GrailsWebRequest that
+  Spring keeps in a thread local. It is read by walking the thread's own
+  ThreadLocalMap, field by field; calling getRequestAttributes() would be one line
+  but means running code in the application to describe it.
+- **Maps show their entries.** `params` now reads as `controller`, `action`, `id`
+  rather than as a wrapper around a table, a size and a modCount. Walked out of
+  the entry table rather than by calling entrySet(), and GrailsParameterMap
+  unwraps to the map it holds.
+
 ## 0.1.6 — pre-release
 
 ### Fixed

@@ -44,6 +44,12 @@ What that means in practice:
   down to the first line that can hold one, and says so.
 - Variables captured by a closure are shown as their values, not as the
   `groovy.lang.Reference` the compiler boxed them in.
+- **A Grails scope** beside Locals whenever the thread is serving a request, with
+  `params`, `request`, `response` and `session`. None of those is a local or a
+  field of anything on the stack — they belong to the request, which Spring keeps
+  in a thread local — so nothing else shows them.
+- Maps show their entries. `params` reads as `controller`, `action`, `id`, not as
+  a wrapper around a table and a modCount.
 - A domain object shows its own properties. GORM's traits compile a field into
   every domain class they touch, and a class with one property of its own arrives
   carrying half a dozen of them; those are hidden, and `id` and `version` are not.
