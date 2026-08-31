@@ -10,6 +10,18 @@
   "categories": [
     "Other"
   ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gaolei8888/dc-grails-vs.git"
+  },
+  "keywords": [
+    "grails",
+    "groovy",
+    "gradle",
+    "debugger",
+    "breakpoints"
+  ],
   "activationEvents": [
     "onDebugResolve:groovy"
   ],
@@ -22,6 +34,23 @@
           "aliases": [ "Groovy", "grails" ]
         }
       ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "grails",
+          "title": "Grails",
+          "icon": "media/grails.svg"
+        }
+      ]
+    },
+    "views": {
+      "grails": [
+        {
+          "id": "grailsCommands",
+          "name": "Commands"
+        }
+      ]
+    },
     "breakpoints": [
       {
         "language": "groovy"

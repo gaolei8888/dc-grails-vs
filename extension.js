@@ -315,14 +315,145 @@ function runGrailsCommandViaGradle(commandName, promptForArgs = true) {
   });
 }
 
+/**
+ * The command tree in the sidebar.
+ *
+ * The extension registers 199 commands. In the palette they are only reachable by
+ * remembering the name, which for create-domain-class or dbm-gorm-diff is most of
+ * the work. Grouping the ones people actually reach for makes them clickable; the
+ * rest stay in the palette.
+ */
+const COMMAND_TREE = [
+  {
+    label: 'Run', icon: 'play-circle', items: [
+      { label: 'Run App', command: 'grails.runApp', icon: 'play' },
+      { label: 'Debug App', command: 'grails.debug', icon: 'debug-alt' },
+      { label: 'Stop App', command: 'grails.stopApp', icon: 'debug-stop' },
+      { label: 'Stop Debug App', command: 'grails.stopDebug', icon: 'debug-stop' }
+    ]
+  },
+  {
+    label: 'Create', icon: 'new-file', items: [
+      { label: 'Controller', command: 'grails.create-controller' },
+      { label: 'Domain Class', command: 'grails.create-domain-class' },
+      { label: 'Service', command: 'grails.create-service' },
+      { label: 'Taglib', command: 'grails.create-taglib' },
+      { label: 'Interceptor', command: 'grails.create-interceptor' },
+      { label: 'Scaffold Controller', command: 'grails.create-scaffold-controller' },
+      { label: 'Unit Test', command: 'grails.create-unit-test' },
+      { label: 'Integration Test', command: 'grails.create-integration-test' }
+    ]
+  },
+  {
+    label: 'Generate', icon: 'sparkle', items: [
+      { label: 'All', command: 'grails.generate-all' },
+      { label: 'Controller', command: 'grails.generate-controller' },
+      { label: 'Service', command: 'grails.generate-service' },
+      { label: 'Views', command: 'grails.generate-views' }
+    ]
+  },
+  {
+    label: 'Database Migration', icon: 'database', items: [
+      { label: 'dbm-update', command: 'grails.dbm-update' },
+      { label: 'dbm-status', command: 'grails.dbm-status' },
+      { label: 'dbm-gorm-diff', command: 'grails.dbm-gorm-diff' }
+    ]
+  },
+  {
+    label: 'Gradle', icon: 'tools', items: [
+      { label: 'build', command: 'gradle.build' },
+      { label: 'test', command: 'gradle.test' },
+      { label: 'clean', command: 'gradle.clean' },
+      { label: 'war', command: 'gradle.war' },
+      { label: 'integrationTest', command: 'gradle.integrationTest' }
+    ]
+  }
+];
+
+class GrailsCommandsProvider {
+  getTreeItem(node) {
+    return node;
+  }
+
+  getChildren(node) {
+    if (!node) {
+      return COMMAND_TREE.map(group => {
+        const item = new vscode.TreeItem(
+          group.label, vscode.TreeItemCollapsibleState.Expanded);
+        item.iconPath = new vscode.ThemeIcon(group.icon);
+        item.children = group.items;
+        return item;
+      });
+    }
+    return (node.children || []).map(entry => {
+      const item = new vscode.TreeItem(entry.label, vscode.TreeItemCollapsibleState.None);
+      item.command = { command: entry.command, title: entry.label };
+      item.iconPath = new vscode.ThemeIcon(entry.icon || 'terminal');
+      // The palette id, so the tree stays a shortcut to the same commands rather
+      // than a second way of doing the same thing differently.
+      item.tooltip = entry.command;
+      return item;
+    });
+  }
+}
+
+// Status bar. Run/Debug/Stop are stateful -- whether the app is up is the thing
+// you want to see without looking for it -- so they live here rather than in the
+// tree, which is for actions that take an argument.
+let statusRun = null;
+let statusDebug = null;
+let statusStop = null;
+
+function refreshStatusBar() {
+  if (!statusRun) {
+    return;
+  }
+  const busy = !!gradleRunProcess || !!gradleDebugProcess;
+  if (busy) {
+    statusRun.hide();
+    statusDebug.hide();
+    statusStop.text = gradleDebugProcess
+      ? '$(debug-stop) Stop Grails (debug)'
+      : '$(debug-stop) Stop Grails';
+    statusStop.command = gradleDebugProcess ? 'grails.stopDebug' : 'grails.stopApp';
+    statusStop.show();
+  } else {
+    statusStop.hide();
+    statusRun.show();
+    statusDebug.show();
+  }
+}
+
+function createStatusBar(context) {
+  // Right-aligned, high priority so the pair stays together and near the left of
+  // that group rather than drifting between other extensions' items.
+  statusRun = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  statusRun.text = '$(play) Grails';
+  statusRun.tooltip = 'Grails: Run App';
+  statusRun.command = 'grails.runApp';
+
+  statusDebug = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+  statusDebug.text = '$(debug-alt) Debug';
+  statusDebug.tooltip = 'Grails: Debug App';
+  statusDebug.command = 'grails.debug';
+
+  statusStop = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 98);
+  statusStop.tooltip = 'Stop the running Grails app';
+
+  context.subscriptions.push(statusRun, statusDebug, statusStop);
+  refreshStatusBar();
+}
+
 function activate(context) {
   // The debug adapter that makes .groovy breakpoints bind at all. Registered
   // unconditionally so a hand-written launch.json of type "groovy" works whether
   // or not the app was started through this extension.
   context.subscriptions.push(
     vscode.debug.registerDebugAdapterDescriptorFactory('groovy', makeAdapterFactory(context)),
-    vscode.debug.registerDebugConfigurationProvider('groovy', groovyConfigurationProvider)
+    vscode.debug.registerDebugConfigurationProvider('groovy', groovyConfigurationProvider),
+    vscode.window.registerTreeDataProvider('grailsCommands', new GrailsCommandsProvider())
   );
+  createStatusBar(context);
 
   // ===== Dedicated Commands for Running the App (Grails-specific) =====
 
@@ -348,9 +479,11 @@ function activate(context) {
     if (!gradleRunProcess) {
       return; // spawnBuild already said what was wrong
     }
+    refreshStatusBar();
     gradleRunProcess.on('close', code => {
       vscode.window.showInformationMessage(`Grails (normal) exited with code ${code}`);
       gradleRunProcess = null;
+      refreshStatusBar();
     });
   });
 
@@ -363,6 +496,7 @@ function activate(context) {
     vscode.window.showInformationMessage('Stopping Grails app (normal mode)...');
     killProcessTree(gradleRunProcess);
     gradleRunProcess = null;
+    refreshStatusBar();
   });
 
   // 3) Grails (Gradle): Debug App
@@ -441,6 +575,7 @@ function activate(context) {
     if (!gradleDebugProcess) {
       return; // spawnBuild already said what was wrong
     }
+    refreshStatusBar();
 
     giveUp = setTimeout(() => {
       if (attached) return;
@@ -455,6 +590,7 @@ function activate(context) {
       clearTimeout(giveUp);
       vscode.window.showInformationMessage(`Grails debug process exited with code ${code}`);
       gradleDebugProcess = null;
+      refreshStatusBar();
     });
   });
 
@@ -467,6 +603,7 @@ function activate(context) {
     vscode.window.showInformationMessage('Stopping Grails debug process...');
     killProcessTree(gradleDebugProcess);
     gradleDebugProcess = null;
+    refreshStatusBar();
   });
 
   // ===== Generic Grails CLI Commands (if needed) =====

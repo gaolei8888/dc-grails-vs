@@ -1,0 +1,10 @@
+<!--
+  Activity bar icon. Monochrome and drawn with currentColor so VSCode can tint it
+  for the active/inactive and light/dark states; anything else renders wrong in at
+  least one of them. Deliberately a generic "list of things you can run" glyph
+  rather than anything resembling the Grails logo, which is a trademark.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+  <path d="M3 5h13.5v2H3zM3 11h9v2H3zM3 17h9v2H3z"/>
+  <path d="M16.25 10.75v8l6.5-4z"/>
+</svg>
