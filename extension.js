@@ -344,13 +344,35 @@ function spawnBuild(options) {
   const onLine = options.onLine;
   let pending = '';
   const pump = chunk => {
-    const text = chunk.toString();
-    channel.append(text);
-    if (!onLine) return;
-    pending += text;
-    const lines = pending.split(/\r?\n/);
-    pending = lines.pop();
-    lines.forEach(onLine);
+    // Nothing in here may throw. A listener that throws stops the stream being
+    // consumed; the pipe fills at 64 KB and the application blocks on its next
+    // write, forever. What that looks like from outside is a build that stops
+    // printing the moment the app starts logging and an app that binds its ports
+    // and then never finishes starting -- with no error anywhere, because the
+    // error was in the reader.
+    try {
+      const text = chunk.toString();
+      channel.append(text);
+      if (!onLine) {
+        return;
+      }
+      pending += text;
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop();
+      for (const line of lines) {
+        try {
+          onLine(line);
+        } catch (err) {
+          channel.appendLine('[grails] line handler failed: ' + (err && err.stack || err));
+        }
+      }
+    } catch (err) {
+      try {
+        channel.appendLine('[grails] output pump failed: ' + (err && err.stack || err));
+      } catch (ignored) {
+        // the channel itself is gone; there is nowhere left to report to
+      }
+    }
   };
   proc.stdout.on('data', pump);
   proc.stderr.on('data', pump);
