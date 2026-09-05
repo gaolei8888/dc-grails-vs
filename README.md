@@ -53,6 +53,9 @@ What that means in practice:
 - A domain object shows its own properties. GORM's traits compile a field into
   every domain class they touch, and a class with one property of its own arrives
   carrying half a dozen of them; those are hidden, and `id` and `version` are not.
+- Step over lands on the next line of your code, including on the way back out of
+  a call. It is built out of breakpoints rather than JDI stepping, which in a
+  Grails application would sometimes run to the end of the method instead.
 - Stepping skips the framework: the Groovy runtime, reflection, the transaction
   template and the servlet container are stepped over rather than into.
 - **Exception breakpoints**, caught and uncaught, filtered the same way: it stops
@@ -157,9 +160,6 @@ as missing.
 
 ## Known issues
 
-- **Step over from the middle of a line overshoots.** After a call returns you are
-  partway through the line that made it; a step over issued there runs to the end
-  of the method instead of moving to the next line. Located, not yet fixed.
 - **Step into does not enter a `@Transactional` method.** Its entry runs through
   the transaction template, and stepping climbs back out to the calling line. Put a
   breakpoint in the method instead.

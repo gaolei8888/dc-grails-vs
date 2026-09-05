@@ -1,5 +1,23 @@
 # Change Log
 
+## 0.1.9 — pre-release
+
+### Fixed
+
+- **Step over no longer runs to the end of the method.** Issued partway through a
+  line -- which is exactly where a returning call leaves you -- a JDI step over
+  produced no event at all here: the remaining lines ran and the next event arrived
+  once the frame had popped. Three attempts at characterising when it does that
+  came to nothing (exclusion filters, count filters, and the position within the
+  line each ruled out by measurement), so step over no longer uses JDI stepping.
+  It says what a step over means directly: a breakpoint on the first location of
+  every other line of the method, plus a method exit for the return, whichever
+  comes first.
+- Returning from a call now continues in the caller rather than stopping twice on
+  the line being returned from, and climbs past the wrapper frames Grails puts
+  between a transactional method and its caller, which have no line numbers to
+  stop on.
+
 ## 0.1.8 — pre-release
 
 ### Added

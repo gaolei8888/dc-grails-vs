@@ -18,12 +18,15 @@ import com.sun.jdi.event.Event;
 import com.sun.jdi.event.ExceptionEvent;
 import com.sun.jdi.event.EventQueue;
 import com.sun.jdi.event.EventSet;
+import com.sun.jdi.event.MethodExitEvent;
 import com.sun.jdi.event.StepEvent;
 import com.sun.jdi.event.VMDeathEvent;
 import com.sun.jdi.event.VMDisconnectEvent;
 import com.sun.jdi.request.BreakpointRequest;
 import com.sun.jdi.request.EventRequest;
+import com.sun.jdi.request.EventRequestManager;
 import com.sun.jdi.request.ExceptionRequest;
+import com.sun.jdi.request.MethodExitRequest;
 import com.sun.jdi.request.StepRequest;
 import org.groovydap.dap.DapTransport;
 import org.groovydap.jdi.BreakpointBinder;
@@ -41,6 +44,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -117,6 +121,9 @@ public final class DebugSession {
     private final Map<Long, Integer> stepDepths = new ConcurrentHashMap<>();
     private final Map<Long, Integer> stepOriginFrames = new ConcurrentHashMap<>();
     private final Map<Long, Integer> restepBudget = new ConcurrentHashMap<>();
+    /** Requests standing in for a step over that JDI cannot do from here. */
+    private final Set<EventRequest> stepAssist = ConcurrentHashMap.newKeySet();
+    private volatile int assistOriginFrames;
 
     public DebugSession(InputStream in, OutputStream out) {
         this.transport = new DapTransport(in, out);
@@ -411,6 +418,7 @@ public final class DebugSession {
     }
 
     private void onContinue(Map<String, Object> request) {
+        clearStepAssist(); // a continue abandons any step in progress
         Map<String, Object> args = arguments(request);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("allThreadsContinued", Boolean.TRUE);
@@ -435,10 +443,97 @@ public final class DebugSession {
         stepDepths.put(thread.uniqueID(), depth);
         stepOriginFrames.put(thread.uniqueID(), frameCountOf(thread));
         restepBudget.put(thread.uniqueID(), MAX_AUTOMATIC_RESTEPS);
-        requestStep(thread, depth);
+        // Step over never goes through JDI stepping. Where it lands was not
+        // predictable here: issuing one partway through a line ran to the end of
+        // the method, and after three attempts at characterising when else it does
+        // that -- exclusion filters, count filters, the shape of the previous stop
+        // -- a step from the first bytecode of a line did it too. The breakpoint
+        // form says exactly what a step over means and is not subject to any of it.
+        if (depth != StepRequest.STEP_OVER || !armLineStep(thread)) {
+            requestStep(thread, depth);
+        }
 
         transport.sendResponse(request, null);
         resumeTarget();
+    }
+
+    /**
+     * A step over built out of breakpoints, for where JDI will not do one.
+     *
+     * <p>A STEP_OVER issued while the thread is partway through a line -- exactly
+     * where a returning call leaves it -- runs to the end of the method instead of
+     * stopping at the next line. Measured repeatedly: from index line 9 at bci 104,
+     * lines 10 and 11 execute, no step event is generated for either, and the next
+     * event arrives once the frame has popped. Class exclusion filters and the
+     * count filter were both ruled out as the cause; what remains is that the
+     * request does not behave, so this stops asking it to.
+     *
+     * <p>The semantics of a step over are "stop at the next line reached in this
+     * frame, or when it returns". Both halves can be said directly: a breakpoint on
+     * the first location of every other line of this method, and a method exit
+     * request for the return. Whichever happens first is the answer.
+     *
+     * @return false if the method has no line table to work from, in which case the
+     *     caller should fall back to an ordinary step
+     */
+    private boolean armLineStep(ThreadReference thread) {
+        try {
+            return armLineStepAt(thread, thread.frame(0).location(), frameCountOf(thread));
+        } catch (Exception e) {
+            clearStepAssist();
+            return false;
+        }
+    }
+
+    private boolean armLineStepAt(ThreadReference thread, Location here, int originFrames) {
+        try {
+            List<Location> lines = here.method().allLineLocations();
+            if (lines.isEmpty()) {
+                return false;
+            }
+            clearStepAssist();
+            assistOriginFrames = originFrames;
+            EventRequestManager erm = vm.eventRequestManager();
+
+            Set<Integer> armed = new java.util.HashSet<>();
+            for (Location location : lines) {
+                if (location.lineNumber() == here.lineNumber()
+                        || !armed.add(location.lineNumber())) {
+                    continue;
+                }
+                BreakpointRequest at = erm.createBreakpointRequest(location);
+                at.addThreadFilter(thread);
+                at.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+                at.enable();
+                stepAssist.add(at);
+            }
+
+            MethodExitRequest exit = erm.createMethodExitRequest();
+            exit.addThreadFilter(thread);
+            exit.addClassFilter(here.declaringType());
+            exit.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+            exit.enable();
+            stepAssist.add(exit);
+            return !stepAssist.isEmpty();
+        } catch (Exception e) {
+            clearStepAssist();
+            return false;
+        }
+    }
+
+    private void clearStepAssist() {
+        if (stepAssist.isEmpty()) {
+            return;
+        }
+        EventRequestManager erm = vm.eventRequestManager();
+        for (EventRequest request : stepAssist) {
+            try {
+                erm.deleteEventRequest(request);
+            } catch (RuntimeException e) {
+                // the VM may be gone, or the class unloaded with it
+            }
+        }
+        stepAssist.clear();
     }
 
     private void requestStep(ThreadReference thread, int depth) {
@@ -553,8 +648,13 @@ public final class DebugSession {
                     // are the same stop, so only the first one is a stop.
                     if (!sawBreakpoint) {
                         sawBreakpoint = true;
-                        announce = orFirst(announce, onBreakpointHit((BreakpointEvent) event));
+                        BreakpointEvent hit = (BreakpointEvent) event;
+                        announce = orFirst(announce, stepAssist.contains(hit.request())
+                                ? onAssistArrival(hit.thread())
+                                : onBreakpointHit(hit));
                     }
+                } else if (event instanceof MethodExitEvent) {
+                    announce = orFirst(announce, onAssistExit((MethodExitEvent) event));
                 } else if (event instanceof ExceptionEvent) {
                     announce = orFirst(announce, onExceptionThrown((ExceptionEvent) event));
                 } else if (event instanceof StepEvent) {
@@ -600,6 +700,82 @@ public final class DebugSession {
         variables.reset();
         List<Integer> ids = binder.idsFor((BreakpointRequest) event.request());
         return () -> sendStopped("breakpoint", thread, ids);
+    }
+
+    /** The stand-in step over reached the next line of the frame. */
+    private Runnable onAssistArrival(ThreadReference thread) {
+        clearStepAssist();
+        try {
+            Location at = thread.frame(0).location();
+            if (at.lineNumber() < 0 || isOutsideProject(at)) {
+                // Same rule the ordinary step follows: nowhere worth stopping.
+                if (armLineStepOnCaller(thread)) {
+                    return null;
+                }
+            }
+        } catch (Exception ignored) {
+            // fall through and report where we are
+        }
+        stoppedThread = thread;
+        variables.reset();
+        deduper.forget(thread);
+        return () -> sendStopped("step", thread, new ArrayList<>());
+    }
+
+    /**
+     * The frame is returning, so the step over continues in whoever called it.
+     *
+     * <p>Method exit fires for every method of the class on this thread, so a
+     * deeper call returning arrives here too; the frame count tells them apart.
+     *
+     * <p>It also fires <em>before</em> the frame pops, which is why this reports
+     * nothing. Stopping here would stop on the line just stopped at -- the return
+     * -- a second time. Instead the same trick is set up again on the caller, and
+     * the step lands on the next line executed there.
+     *
+     * <p>The caller may be a wrapper with no line table of its own: Grails puts
+     * three of them between a transactional method and the code that called it. So
+     * it climbs to the nearest frame that has lines and belongs to the project.
+     */
+    private Runnable onAssistExit(MethodExitEvent event) {
+        if (!stepAssist.contains(event.request())) {
+            return null;
+        }
+        ThreadReference thread = event.thread();
+        if (frameCountOf(thread) > assistOriginFrames) {
+            return null; // a nested call returning, not this frame
+        }
+        clearStepAssist();
+        if (armLineStepOnCaller(thread)) {
+            return null; // carry on; the caller's lines are armed now
+        }
+        // Nothing above has lines we can use. Fall back to an ordinary step out.
+        requestStep(thread, StepRequest.STEP_OUT);
+        return null;
+    }
+
+    /**
+     * Arms the line breakpoints on the nearest caller worth stopping in.
+     *
+     * @return false if no frame above has both a line table and a source file in
+     *     the project, in which case there is nothing useful to arm
+     */
+    private boolean armLineStepOnCaller(ThreadReference thread) {
+        try {
+            List<StackFrame> frames = thread.frames();
+            for (int i = 1; i < frames.size(); i++) {
+                Location at = frames.get(i).location();
+                if (at.lineNumber() < 0 || isOutsideProject(at)) {
+                    continue;
+                }
+                if (armLineStepAt(thread, at, frames.size() - i)) {
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            return false;
+        }
+        return false;
     }
 
     private Runnable onStepDone(StepEvent event) {
