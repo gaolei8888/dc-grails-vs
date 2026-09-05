@@ -1,5 +1,42 @@
 # Change Log
 
+## 0.1.11 — pre-release
+
+### Added
+
+- **Conditional breakpoints**, for comparisons: `params.id == '5'`, `i > 3`,
+  `user.name != null`. A full condition means compiling a Groovy expression and
+  running it inside the application, but the conditions people type are two
+  paths or literals around an operator, and paths were already readable. Names
+  from the Grails scope work here too, so `params.action == 'index'` is a
+  condition although `params` is not a local. Anything else — a call, arithmetic,
+  a closure — is reported on the breakpoint, and such a breakpoint stops every
+  time rather than never: a breakpoint that silently never fires reads as a
+  broken debugger.
+- **Step into enters a `@Transactional` method.** It could not before: the entry
+  runs through Grails' transaction template, so the step completed back on the
+  calling line, having run the whole method. Entering one of the project's own
+  methods is now asked for directly instead of stepped towards. Stepping into
+  `(1..3).each { i ->` lands in the closure body.
+
+### Fixed
+
+- **A step no longer skips the last line of a method.** The lines it armed took
+  only the first bytecode of each line, and Groovy compiles a statement twice
+  under one line number with the second copy often the one that runs — so the
+  armed copy never executed and the step came out in the caller instead. Present
+  since 0.1.9, where it went unnoticed because the method measured there happens
+  to run the first copy of every line.
+- When a condition and a hit count are both set, the count advances only when the
+  condition was true, so `i > 1` with `=2` stops the second time `i > 1` holds.
+
+### Note
+
+- **Step out was verified for the first time**, having never been executed
+  before: it walks the three line-less frames Grails puts between a transactional
+  method and its caller, and stepping out of the outermost frame of your own code
+  runs on, there being nothing above it to stop in.
+
 ## 0.1.10 — pre-release
 
 ### Added

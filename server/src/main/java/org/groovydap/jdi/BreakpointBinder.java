@@ -52,11 +52,13 @@ public final class BreakpointBinder {
         public final int line;
         public final String logMessage;
         public final String hitCondition;
+        public final String condition;
 
-        public Spec(int line, String logMessage, String hitCondition) {
+        public Spec(int line, String logMessage, String hitCondition, String condition) {
             this.line = line;
             this.logMessage = logMessage;
             this.hitCondition = hitCondition;
+            this.condition = condition;
         }
     }
 
@@ -89,8 +91,9 @@ public final class BreakpointBinder {
         String message;
         String logMessage;
         HitCondition hitCondition;
-        /** Set when a hit condition was typed and could not be read. */
-        String hitConditionProblem;
+        Condition condition;
+        /** Set when something was typed into a box and could not be read. */
+        final List<String> problems = new ArrayList<>();
         /** Hits that got as far as being a stop; the Groovy duplicate is not one. */
         long hits;
 
@@ -178,9 +181,18 @@ public final class BreakpointBinder {
                 if (bp.hitCondition == null) {
                     // Say so rather than binding a breakpoint that ignores it: a hit
                     // count quietly dropped looks like a debugger stopping wrongly.
-                    bp.hitConditionProblem = "hit count \"" + spec.hitCondition.trim()
+                    bp.problems.add("hit count \"" + spec.hitCondition.trim()
                             + "\" not understood; expected a number, "
-                            + "optionally after >, >=, =, <, <= or %";
+                            + "optionally after >, >=, =, <, <= or %");
+                }
+            }
+            if (spec.condition != null && !spec.condition.trim().isEmpty()) {
+                bp.condition = Condition.parse(spec.condition);
+                if (bp.condition == null) {
+                    bp.problems.add("condition \"" + spec.condition.trim()
+                            + "\" is not a comparison this can read; expected two paths "
+                            + "or literals around ==, !=, >, >=, < or <=. It has no "
+                            + "expression compiler, so the breakpoint will stop every time");
                 }
             }
             state.breakpoints.add(bp);
@@ -240,13 +252,19 @@ public final class BreakpointBinder {
      * breakpoint stop, so the duplicate that a doubly-compiled Groovy line produces
      * has to have been dropped before this is reached.
      */
-    public synchronized Hit onHit(BreakpointRequest request) {
+    public synchronized Hit onHit(BreakpointRequest request,
+                                  java.util.function.Predicate<Condition> holds) {
         Bp bp = owners.get(request);
         if (bp == null) {
             // Not ours. Stopping is the safe answer; nothing else knows the line.
             return new Hit(new ArrayList<>(), true, null);
         }
         List<Integer> ids = new ArrayList<>(List.of(bp.id));
+        // The condition decides before the count moves: "stop on the third time the
+        // condition was true" is what anyone setting both of them means.
+        if (bp.condition != null && !holds.test(bp.condition)) {
+            return new Hit(ids, false, null);
+        }
         bp.hits++;
         if (bp.hitCondition != null && !bp.hitCondition.test(bp.hits)) {
             return new Hit(ids, false, null);
@@ -406,9 +424,8 @@ public final class BreakpointBinder {
         breakpoint.put("line", bp.line);
         breakpoint.put("source", source);
         String message = bp.message;
-        if (bp.hitConditionProblem != null) {
-            message = message == null ? bp.hitConditionProblem
-                    : message + "; " + bp.hitConditionProblem;
+        for (String problem : bp.problems) {
+            message = message == null ? problem : message + "; " + problem;
         }
         if (message != null) {
             breakpoint.put("message", message);

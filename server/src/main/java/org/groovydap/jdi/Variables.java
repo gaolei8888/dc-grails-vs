@@ -12,7 +12,6 @@ import com.sun.jdi.ThreadReference;
 import com.sun.jdi.Value;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -283,16 +282,11 @@ public final class Variables {
     /** How much of a collection goes into a log line, and how deep. */
     private static final int MAX_INLINE_ELEMENTS = 8;
     private static final int MAX_INLINE_DEPTH = 2;
-    private static final String REFERENCE_CLASS = "groovy.lang.Reference";
 
     /** package_with_underscores_TraitName__field, how Groovy names a trait field. */
     private static final java.util.regex.Pattern TRAIT_FIELD =
             java.util.regex.Pattern.compile("[a-z][A-Za-z0-9_]*_[A-Z][A-Za-z0-9]*__.+");
 
-    private static final Set<String> BOXES = new HashSet<>(Arrays.asList(
-            "java.lang.Integer", "java.lang.Long", "java.lang.Short", "java.lang.Byte",
-            "java.lang.Double", "java.lang.Float", "java.lang.Boolean",
-            "java.lang.Character"));
 
     private final Map<Integer, Node> handles = new LinkedHashMap<>();
     private final AtomicInteger nextHandle = new AtomicInteger(1);
@@ -470,15 +464,7 @@ public final class Variables {
      * talks about.
      */
     private Value unwrapReference(Value value) {
-        if (!(value instanceof ObjectReference)) {
-            return value;
-        }
-        ObjectReference object = (ObjectReference) value;
-        if (!REFERENCE_CLASS.equals(object.referenceType().name())) {
-            return value;
-        }
-        Field field = object.referenceType().fieldByName("value");
-        return field == null ? value : object.getValue(field);
+        return Values.unwrapReference(value);
     }
 
     /**
@@ -492,18 +478,8 @@ public final class Variables {
      * no code in the target VM.
      */
     private String renderBoxed(ObjectReference object, String type) {
-        if (!BOXES.contains(type)) {
-            return null;
-        }
-        Field field = object.referenceType().fieldByName("value");
-        if (field == null) {
-            return null;
-        }
-        Value inner = object.getValue(field);
-        if (inner instanceof ArrayReference) {
-            return null; // BigInteger keeps an int[]; not worth decoding
-        }
-        return String.valueOf(inner);
+        Value inner = Values.boxedValue(object);
+        return inner == null ? null : String.valueOf(inner);
     }
 
     private int handleFor(Value value) {
@@ -515,7 +491,7 @@ public final class Variables {
         }
         if (value instanceof ObjectReference) {
             ObjectReference object = (ObjectReference) value;
-            if (BOXES.contains(object.referenceType().name())) {
+            if (Values.isBox(object.referenceType().name())) {
                 return 0; // already shown as its value; there is nothing inside
             }
             ObjectReference asMap = unwrapMap(object);

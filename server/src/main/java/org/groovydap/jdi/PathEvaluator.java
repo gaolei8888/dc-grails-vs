@@ -51,7 +51,10 @@ public final class PathEvaluator {
         for (int i = 1; i < steps.size(); i++) {
             current = step(current, steps.get(i), steps.get(i - 1));
         }
-        return current;
+        // A local a closure captured is boxed in a groovy.lang.Reference. Nobody
+        // asking for it means the box, and a path continuing through one would
+        // look for its fields on the wrong object.
+        return Values.unwrapReference(current);
     }
 
     /**
@@ -156,7 +159,8 @@ public final class PathEvaluator {
         throw new Unsupported("no local, field or request attribute named " + name);
     }
 
-    private static Value step(Value current, String accessor, String previous) throws Unsupported {
+    private static Value step(Value raw, String accessor, String previous) throws Unsupported {
+        Value current = Values.unwrapReference(raw);
         if (current == null) {
             throw new Unsupported(previous + " is null");
         }

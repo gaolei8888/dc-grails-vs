@@ -56,6 +56,9 @@ What that means in practice:
 - Step over lands on the next line of your code, including on the way back out of
   a call. It is built out of breakpoints rather than JDI stepping, which in a
   Grails application would sometimes run to the end of the method instead.
+- **Step into enters a `@Transactional` method**, and enters a closure: stepping
+  into `(1..3).each { i ->` lands in the closure body. Step out walks back through
+  the wrapper frames Grails generates, which have no lines to stop on.
 - Stepping skips the framework: the Groovy runtime, reflection, the transaction
   template and the servlet container are stepped over rather than into.
 - **Exception breakpoints**, caught and uncaught, filtered the same way: it stops
@@ -185,17 +188,33 @@ The count is of hits that would have stopped, so the second copy Groovy compiles
 of every line does not advance it. A hit count that cannot be read is reported on
 the breakpoint rather than ignored.
 
+## Conditions
+
+The **Condition** box takes a comparison:
+
+```
+params.id == '5'      i > 3      user.name != null      w.count <= limit
+```
+
+Each side is a path or a literal — the same reading a hover does — so names from
+the Grails scope work here as well: `params.action == 'index'` is a condition
+although `params` is not a local of anything on the stack.
+
+`==` compares by value, the way Groovy's does. Anything that needs an expression
+compiled and run inside the application — a call, arithmetic, a closure — is
+reported on the breakpoint, and **that breakpoint then stops every time**. A
+condition quietly treated as false would be a breakpoint that never fires, which
+reads as a broken debugger rather than as a condition to rewrite.
+
+With a hit count as well, the count advances only when the condition was true:
+`i > 1` with `=2` stops the second time `i > 1` holds.
+
 ## Known issues
 
-- **Step into does not enter a `@Transactional` method.** Its entry runs through
-  the transaction template, and stepping climbs back out to the calling line. Put a
-  breakpoint in the method instead.
-- **Conditional breakpoints are not implemented** — the Condition box, that is;
-  Hit Count and Log Message both work, since neither needs an expression compiled.
-  A condition, like a hover of anything beyond a path, wants a Groovy expression
-  compiled and run inside the target VM.
 - **Attach only.** There is no launch configuration; the app is started by the
   Gradle wrapper and the adapter attaches to it.
+- A hover, a watch, a logpoint and a condition all read paths rather than
+  evaluating expressions. `list.size()` is refused by name, with the reason.
 - GSP files are not mapped.
 
 ## Star it

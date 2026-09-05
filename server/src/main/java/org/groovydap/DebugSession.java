@@ -32,6 +32,7 @@ import com.sun.jdi.request.MethodExitRequest;
 import com.sun.jdi.request.StepRequest;
 import org.groovydap.dap.DapTransport;
 import org.groovydap.jdi.BreakpointBinder;
+import org.groovydap.jdi.Condition;
 import org.groovydap.jdi.GrailsWebScope;
 import org.groovydap.jdi.PathEvaluator;
 import org.groovydap.jdi.SourceLocator;
@@ -184,9 +185,11 @@ public final class DebugSession {
         capabilities.put("supportsTerminateRequest", Boolean.TRUE);
         // Not yet: conditional breakpoints need Groovy expressions compiled and
         // evaluated inside the target VM, which is the T2 work item.
-        capabilities.put("supportsConditionalBreakpoints", Boolean.FALSE);
-        // These two need no expression compiler: a hit count is arithmetic, and a
-        // log message is the path reading that already answers hovers.
+        // Comparisons, which is what conditions nearly always are. Anything else
+        // is reported on the breakpoint rather than silently ignored; see Condition.
+        capabilities.put("supportsConditionalBreakpoints", Boolean.TRUE);
+        // These two need no expression compiler either: a hit count is arithmetic,
+        // and a log message is the path reading that already answers hovers.
         capabilities.put("supportsHitConditionalBreakpoints", Boolean.TRUE);
         capabilities.put("supportsLogPoints", Boolean.TRUE);
         capabilities.put("supportsEvaluateForHovers", Boolean.TRUE);
@@ -279,7 +282,8 @@ public final class DebugSession {
                     specs.add(new BreakpointBinder.Spec(
                             (int) number(entry.get("line"), 0),
                             text(entry.get("logMessage")),
-                            text(entry.get("hitCondition"))));
+                            text(entry.get("hitCondition")),
+                            text(entry.get("condition"))));
                 }
             }
         }
@@ -789,7 +793,8 @@ public final class DebugSession {
             // The other half of a line Groovy compiled twice; see StopDeduper.
             return null;
         }
-        BreakpointBinder.Hit hit = binder.onHit((BreakpointRequest) event.request());
+        BreakpointBinder.Hit hit = binder.onHit((BreakpointRequest) event.request(),
+                condition -> conditionHolds(condition, thread));
         if (hit.logMessage != null) {
             // A logpoint. Print where a stop would have been and carry on -- which
             // is the whole point of one: seeing a value on every pass through a
@@ -803,6 +808,26 @@ public final class DebugSession {
         stoppedThread = thread;
         variables.reset();
         return () -> sendStopped("breakpoint", thread, hit.ids);
+    }
+
+    /**
+     * A breakpoint's condition, against the frame it just stopped in.
+     *
+     * <p>An unreadable condition stops. The alternative -- treating it as false --
+     * is a breakpoint that never fires, which reads as a broken debugger rather
+     * than as a condition the user should rewrite. The reason is printed so it can
+     * be rewritten.
+     */
+    private boolean conditionHolds(Condition condition, ThreadReference thread) {
+        try {
+            return condition.test(thread.frame(0), GrailsWebScope.find(vm, thread));
+        } catch (PathEvaluator.Unsupported e) {
+            log("breakpoint condition: " + e.getMessage() + " -- stopping anyway");
+            return true;
+        } catch (Exception e) {
+            log("breakpoint condition failed: " + e + " -- stopping anyway");
+            return true;
+        }
     }
 
     /**
