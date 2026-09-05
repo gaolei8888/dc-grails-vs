@@ -47,6 +47,39 @@ import java.util.function.Consumer;
  */
 public final class BreakpointBinder {
 
+    /** One line the client asked for, with whatever was typed into its boxes. */
+    public static final class Spec {
+        public final int line;
+        public final String logMessage;
+        public final String hitCondition;
+
+        public Spec(int line, String logMessage, String hitCondition) {
+            this.line = line;
+            this.logMessage = logMessage;
+            this.hitCondition = hitCondition;
+        }
+    }
+
+    /**
+     * What a hit on one of these breakpoints means.
+     *
+     * <p>Three outcomes, and only the first is a stop: a plain breakpoint stops, a
+     * logpoint prints and carries on, and a hit that the hit count has not reached
+     * yet does neither.
+     */
+    public static final class Hit {
+        public final List<Integer> ids;
+        public final boolean stop;
+        /** The template to print and resume on, or null if this is not a logpoint. */
+        public final String logMessage;
+
+        private Hit(List<Integer> ids, boolean stop, String logMessage) {
+            this.ids = ids;
+            this.stop = stop;
+            this.logMessage = logMessage;
+        }
+    }
+
     /** One breakpoint the client asked for, and everything armed on its behalf. */
     private static final class Bp {
         final int id;
@@ -54,6 +87,12 @@ public final class BreakpointBinder {
         int line;
         boolean verified;
         String message;
+        String logMessage;
+        HitCondition hitCondition;
+        /** Set when a hit condition was typed and could not be read. */
+        String hitConditionProblem;
+        /** Hits that got as far as being a stop; the Groovy duplicate is not one. */
+        long hits;
 
         /**
          * Requests, kept per class name rather than in one list.
@@ -119,7 +158,7 @@ public final class BreakpointBinder {
      *
      * @return the DAP {@code Breakpoint} objects to answer {@code setBreakpoints} with
      */
-    public synchronized List<Map<String, Object>> setBreakpoints(String path, List<Integer> lines)
+    public synchronized List<Map<String, Object>> setBreakpoints(String path, List<Spec> specs)
             throws IOException {
         String key = key(path);
         SourceState previous = bySource.remove(key);
@@ -131,8 +170,20 @@ public final class BreakpointBinder {
         SourceState state = new SourceState(ref);
         bySource.put(key, state);
 
-        for (int requested : lines) {
-            state.breakpoints.add(new Bp(nextId.getAndIncrement(), requested, requested));
+        for (Spec spec : specs) {
+            Bp bp = new Bp(nextId.getAndIncrement(), spec.line, spec.line);
+            bp.logMessage = spec.logMessage;
+            if (spec.hitCondition != null && !spec.hitCondition.trim().isEmpty()) {
+                bp.hitCondition = HitCondition.parse(spec.hitCondition);
+                if (bp.hitCondition == null) {
+                    // Say so rather than binding a breakpoint that ignores it: a hit
+                    // count quietly dropped looks like a debugger stopping wrongly.
+                    bp.hitConditionProblem = "hit count \"" + spec.hitCondition.trim()
+                            + "\" not understood; expected a number, "
+                            + "optionally after >, >=, =, <, <= or %";
+                }
+            }
+            state.breakpoints.add(bp);
         }
 
         // Classes already loaded. Filter by name before asking anything else --
@@ -181,10 +232,29 @@ public final class BreakpointBinder {
         }
     }
 
-    /** The breakpoint ids to report on a {@code stopped} event, or an empty list. */
-    public synchronized List<Integer> idsFor(BreakpointRequest request) {
+    /**
+     * Counts a hit and says what to do about it.
+     *
+     * <p>Call this only for hits that are really going to be acted on: the count a
+     * hit condition tests is the number of times the user would have seen the
+     * breakpoint stop, so the duplicate that a doubly-compiled Groovy line produces
+     * has to have been dropped before this is reached.
+     */
+    public synchronized Hit onHit(BreakpointRequest request) {
         Bp bp = owners.get(request);
-        return bp == null ? new ArrayList<>() : new ArrayList<>(List.of(bp.id));
+        if (bp == null) {
+            // Not ours. Stopping is the safe answer; nothing else knows the line.
+            return new Hit(new ArrayList<>(), true, null);
+        }
+        List<Integer> ids = new ArrayList<>(List.of(bp.id));
+        bp.hits++;
+        if (bp.hitCondition != null && !bp.hitCondition.test(bp.hits)) {
+            return new Hit(ids, false, null);
+        }
+        if (bp.logMessage != null && !bp.logMessage.isEmpty()) {
+            return new Hit(ids, false, bp.logMessage);
+        }
+        return new Hit(ids, true, null);
     }
 
     public synchronized void clearAll() {
@@ -335,8 +405,13 @@ public final class BreakpointBinder {
         breakpoint.put("verified", bp.verified);
         breakpoint.put("line", bp.line);
         breakpoint.put("source", source);
-        if (bp.message != null) {
-            breakpoint.put("message", bp.message);
+        String message = bp.message;
+        if (bp.hitConditionProblem != null) {
+            message = message == null ? bp.hitConditionProblem
+                    : message + "; " + bp.hitConditionProblem;
+        }
+        if (message != null) {
+            breakpoint.put("message", message);
         }
         return breakpoint;
     }

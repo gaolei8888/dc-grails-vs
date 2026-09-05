@@ -94,11 +94,14 @@ attach 模式下不需要解析 Groovy:`ReferenceType.locationsOfLine(n)` 就是
    (去重生效)、多线程并发命中互不干扰。JVM 是 JDK 25。那一轮暴露并修掉了 4 个 harness
    不可能发现的缺陷(裸 `gradlew.bat`、变量面板静态字段、toolchain、Stop 不杀应用 JVM)。
    仍未验:编辑器里的单步手感(没按过 F10/F11)。
-2. **已定位未修**:从**行中段**发起的 step over 会冲出整个方法体(两个假设已被实验证伪,
-   见 §7.3「遗留缺陷」)。
+2. ~~从行中段发起的 step over 会冲出整个方法体~~ —— **已修(2026-09-04)**:step over 不再走
+   JDI stepping,改成「本方法其余每一行的首个 location 各下一个线程过滤的断点 + 一个
+   MethodExit」,谁先到算谁。三次刻画触发条件的尝试全部被实验证伪,所以是绕开而不是诊断。
 3. **已知限制**:`stepIn` 步不进 `@Transactional` 方法;`stepOut` 只经过编译没实测;
    多线程同时命中的行为未验。
-4. `evaluate` / 条件断点属 T2。
+4. 条件断点(Condition 框)属 T2 —— 需要在目标 VM 内编译执行 Groovy。**Hit Count 与
+   Log Message 不需要**,已实现并实测(2026-09-05,见文档 §7.5);hover / watch 走
+   `PathEvaluator` 只读路径(0.1.8)。
 
 ### 已定的架构决策
 

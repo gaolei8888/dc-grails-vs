@@ -473,17 +473,21 @@ server/
     dap/Json.java                  够用的 JSON 读写(不引 Gson:vsix 体积)
     dap/DapTransport.java          Content-Length 分帧,按字节读,send 加锁
     jdi/SourceRef.java             文件 → 类名前缀 + 「这行有没有可执行代码」
-    jdi/BreakpointBinder.java      §4 算法
+    jdi/BreakpointBinder.java      §4 算法 + logpoint / 命中次数(§7.5)
+    jdi/HitCondition.java          命中次数表达式(>、>=、=、<、<=、%、裸数字)
     jdi/StopDeduper.java           §7.2 ① 的命中侧去重
-    jdi/Variables.java             Reference 解包 / 合成变量过滤 / 装箱值展开
+    jdi/Variables.java             Reference 解包 / 合成变量过滤 / 装箱值展开 / GORM trait 字段过滤
+    jdi/PathEvaluator.java         hover / watch / logpoint 的路径求值(只读不跑)
+    jdi/MapReader.java             HashMap 与 ArrayList 的字段走法
+    jdi/GrailsWebScope.java        ThreadLocal 里的 GrailsWebRequest —— params/request/response/session
     jdi/SourceLocator.java         栈帧 → 源文件(反向映射,本来就是通的)
 ```
 
-**已实现的 DAP 请求**:`initialize` / `attach` / `setBreakpoints` /
-`setExceptionBreakpoints`(空实现)/ `configurationDone` / `threads` / `stackTrace` /
-`scopes` / `variables` / `continue` / `next` / `stepIn` / `stepOut` / `pause` /
-`disconnect` / `terminate`。事件:`initialized` / `stopped` / `continued` /
-`breakpoint` / `terminated` / `output`。
+**已实现的 DAP 请求**:`initialize` / `attach` / `setBreakpoints`(含 `logMessage` 与
+`hitCondition`)/ `setExceptionBreakpoints` / `exceptionInfo` / `configurationDone` /
+`threads` / `stackTrace` / `scopes` / `variables` / `evaluate` / `continue` / `next` /
+`stepIn` / `stepOut` / `pause` / `disconnect` / `terminate`。事件:`initialized` /
+`stopped` / `continued` / `breakpoint` / `terminated` / `output`。
 
 **实机验证**(空白 Grails 7.2.3 应用 + 一个照着 VSCode 说话的 DAP 客户端脚本,非编辑器):
 
@@ -690,11 +694,46 @@ index:8 (断点) → index:8 → index:9 → index:9 → index:10 → SpikeServi
 **还没做的 T1 余项**:
 
 1. `stepIn` / `stepOut` 在编辑器里没按过(step over 已验)。`stepOut` 连 harness 都没验过。
-2. **`next` 与 `stepIn` 已实机验证,`stepOut` 仍只经过编译**;有一个已定位、未修的缺陷:
-   **从行中段发起的 step over 会冲出整个方法体**(见上方「遗留缺陷」);`stepIn` 步不进
-   `@Transactional` 方法(见上方「step filter」)。
-3. `evaluate` / 条件断点 —— 属 T2。
+2. `stepIn` 步不进 `@Transactional` 方法(见上方「step filter」)。step over 的那条缺陷
+   已修,见上方「已修(2026-09-04)」。
+3. 条件断点(Condition 框)—— 属 T2。**Hit Count 与 Log Message 不属于 T2**:两者都不需要
+   编译表达式,已实现,见 §7.5。
 4. 多 `EventSet` 并发命中(多线程同时停)的行为未验。
+
+### 7.5 Logpoint 与命中次数(2026-09-05)
+
+两件都不需要「在目标 VM 内编译并执行 Groovy」,所以不必等 T2 的表达式求值:
+
+- **命中次数**是纯算术。`HitCondition` 解析 `>`/`>=`/`=`/`<`/`<=`/`%` 加一个数字,裸数字
+  按 `>=` 读(VSCode 文档里 hit count 的定义就是「命中多少次之后才中断」)。
+- **Logpoint**的 `{表达式}` 用的是已有的 `PathEvaluator`(§ 见 0.1.8 的路径读取),同样只读
+  不跑;读不了的表达式把原因印在值的位置,不是消失。
+
+两处实现上的选择,都是被前面的实测逼出来的:
+
+1. **计数发生在去重之后。** Groovy 一行编译两份、共用同一行号(§7.2 ①),若在 `BreakpointEvent`
+   上直接计数,`=3` 这样的条件会数到用户根本没看见的那一半上。所以顺序固定为
+   `StopDeduper.shouldReport()` → `BreakpointBinder.onHit()`,计的是「本来会停下来的次数」。
+2. **集合在日志行里要展开。** 面板可以显示 `ArrayList (id=14513)` 让人点开,一行文本不行 ——
+   `sum=java.util.ArrayList (id=14513)` 等于什么都没说。`Variables.plain()` 因此走 `elementData`
+   / `table[]` 把内容写出来,上限 8 项、2 层。
+
+实测(靶子同上,`runcase.sh` + `LOGPOINTS` / `HITCONDS` 两个环境变量):
+
+| 验的东西 | 结果 |
+|---|---|
+| 行 25(嵌套闭包体)的 logpoint 打印 4 次、不停 | 通过 |
+| `{inner}`(外层闭包捕获,`Reference` 装箱) | 通过 —— `inner=104`,自动解包 |
+| `{doubled}` 逐次增长 | 通过 —— `[]` → `[105]` → `[105, 106]` → `[105, 106, 209]` |
+| `{params}` | 通过 —— `[controller:spike, action:index]` |
+| `{base.foo()}` | 通过 —— 原样印出拒绝理由,不是「没有该字段」 |
+| 行 25 `%3`(共 6 次命中) | 通过 —— 只停在第 3 次(i=2,j=1)与第 6 次(i=3,j=2) |
+| 行 23 `>=3` / 裸 `3`(共 3 次命中) | 通过 —— 都只停在 i=3 |
+| 行 25 `=4` | 通过 —— 只停一次,i=2、j=2,正是第 4 次 |
+| 不合法的 hit count(`abc`) | 通过 —— 断点仍绑定并照常停,`message` 里说明没读懂 |
+
+**未验**:编辑器里没试过(harness 直接发 `logMessage` / `hitCondition` 字段,和 VSCode 发的
+是同一个 DAP 形状,但 UI 那一层没走过)。
 
 ### T2 — 好用(再 2~4 周)
 

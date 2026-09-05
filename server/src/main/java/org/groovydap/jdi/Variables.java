@@ -3,6 +3,7 @@ package org.groovydap.jdi;
 import com.sun.jdi.AbsentInformationException;
 import com.sun.jdi.ArrayReference;
 import com.sun.jdi.Field;
+import com.sun.jdi.IntegerValue;
 import com.sun.jdi.LocalVariable;
 import com.sun.jdi.ObjectReference;
 import com.sun.jdi.StackFrame;
@@ -279,6 +280,9 @@ public final class Variables {
     }
 
     private static final int MAX_ARRAY_ELEMENTS = 200;
+    /** How much of a collection goes into a log line, and how deep. */
+    private static final int MAX_INLINE_ELEMENTS = 8;
+    private static final int MAX_INLINE_DEPTH = 2;
     private static final String REFERENCE_CLASS = "groovy.lang.Reference";
 
     /** package_with_underscores_TraitName__field, how Groovy names a trait field. */
@@ -315,6 +319,88 @@ public final class Variables {
         body.put("type", described.get("type"));
         body.put("variablesReference", described.get("variablesReference"));
         return body;
+    }
+
+    /**
+     * One value as a line of text, for a logpoint.
+     *
+     * <p>Same rendering as the pane except for strings, which lose their quotes:
+     * {@code "saving Widget 3"} is a log line, {@code saving "Widget" 3} is a
+     * transcription of the debugger's own notation.
+     */
+    public synchronized String plain(Value value) {
+        return plain(value, 0);
+    }
+
+    private String plain(Value value, int depth) {
+        Value effective = unwrapReference(value);
+        if (effective instanceof StringReference) {
+            return ((StringReference) effective).value();
+        }
+        String collection = depth < MAX_INLINE_DEPTH ? plainCollection(effective, depth) : null;
+        return collection != null ? collection : render(effective);
+    }
+
+    /**
+     * A list or a map written out, for a log line.
+     *
+     * <p>The pane can afford to say {@code ArrayList (id=14513)} and let the user
+     * expand it; a line of text cannot -- an object id in a log is nothing at all.
+     * So the contents go in, walked out of the same fields the pane walks and
+     * capped, because a log line is not a place to print a thousand elements.
+     */
+    private String plainCollection(Value value, int depth) {
+        if (!(value instanceof ObjectReference)) {
+            return null;
+        }
+        ObjectReference object = (ObjectReference) value;
+        List<String> parts = new ArrayList<>();
+        boolean more = false;
+
+        ObjectReference asMap = unwrapMap(object);
+        if (asMap != null) {
+            ArrayReference table = tableOf(asMap);
+            for (Value slot : table.getValues()) {
+                ObjectReference node = slot instanceof ObjectReference
+                        ? (ObjectReference) slot : null;
+                int guard = 0;
+                while (node != null && guard++ < 64) {
+                    Field keyField = node.referenceType().fieldByName("key");
+                    Field valueField = valueFieldOf(node);
+                    if (keyField == null || valueField == null) {
+                        break;
+                    }
+                    if (parts.size() >= MAX_INLINE_ELEMENTS) {
+                        more = true;
+                        break;
+                    }
+                    parts.add(plain(node.getValue(keyField), depth + 1) + ":"
+                            + plain(node.getValue(valueField), depth + 1));
+                    Field nextField = node.referenceType().fieldByName("next");
+                    Value next = nextField == null ? null : node.getValue(nextField);
+                    node = next instanceof ObjectReference ? (ObjectReference) next : null;
+                }
+            }
+            return "[" + String.join(", ", parts) + (more ? ", ..." : "") + "]";
+        }
+
+        Field data = object.referenceType().fieldByName("elementData");
+        Field sizeField = object.referenceType().fieldByName("size");
+        if (data == null || sizeField == null) {
+            return null;
+        }
+        Value array = object.getValue(data);
+        Value count = object.getValue(sizeField);
+        if (!(array instanceof ArrayReference) || !(count instanceof IntegerValue)) {
+            return null;
+        }
+        int size = Math.min(((IntegerValue) count).value(), ((ArrayReference) array).length());
+        int shown = Math.min(size, MAX_INLINE_ELEMENTS);
+        for (int i = 0; i < shown; i++) {
+            parts.add(plain(((ArrayReference) array).getValue(i), depth + 1));
+        }
+        return "[" + String.join(", ", parts)
+                + (shown < size ? ", ... " + (size - shown) + " more" : "") + "]";
     }
 
     /** A handle over just these fields of this object, in this order. */

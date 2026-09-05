@@ -158,13 +158,41 @@ compiled and executed inside the application, which means resuming its threads t
 do it -- so those are refused, by name and with the reason, rather than reported
 as missing.
 
+## Logpoints and hit counts
+
+Right-click in the gutter for **Add Logpoint**: a breakpoint that prints and
+carries on rather than stopping. Anything in braces is read the way a hover is, so
+
+```
+iteration {i}, so far {doubled}, from {params.id}
+```
+
+prints `iteration 2, so far [105, 106], from 47`. Lists and maps are written out
+rather than shown as an object id — up to eight entries, two levels deep. An
+expression it cannot read prints the reason in place of the value instead of
+disappearing.
+
+**Hit Count** takes a number, optionally after an operator:
+
+| | |
+|---|---|
+| `100` | stop from the hundredth hit onward (same as `>=100`) |
+| `=100` | stop on the hundredth hit only |
+| `>100` `<100` `<=100` | as they read |
+| `%10` | stop on every tenth hit |
+
+The count is of hits that would have stopped, so the second copy Groovy compiles
+of every line does not advance it. A hit count that cannot be read is reported on
+the breakpoint rather than ignored.
+
 ## Known issues
 
 - **Step into does not enter a `@Transactional` method.** Its entry runs through
   the transaction template, and stepping climbs back out to the calling line. Put a
   breakpoint in the method instead.
-- **Conditional breakpoints are not implemented**, and hover and watch read paths
-  rather than evaluating expressions (see above). Both want a Groovy expression
+- **Conditional breakpoints are not implemented** — the Condition box, that is;
+  Hit Count and Log Message both work, since neither needs an expression compiled.
+  A condition, like a hover of anything beyond a path, wants a Groovy expression
   compiled and run inside the target VM.
 - **Attach only.** There is no launch configuration; the app is started by the
   Gradle wrapper and the adapter attaches to it.

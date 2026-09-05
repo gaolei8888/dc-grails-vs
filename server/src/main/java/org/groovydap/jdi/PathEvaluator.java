@@ -177,7 +177,13 @@ public final class PathEvaluator {
         }
         Field field = object.referenceType().fieldByName(accessor);
         if (field == null) {
-            throw new Unsupported(object.referenceType().name() + " has no field " + accessor);
+            // A map that was searched and came back empty-handed is a different
+            // answer from an object without such a field, and the one the reader
+            // of "params.id" wants to hear.
+            throw new Unsupported(object.referenceType().name()
+                    + (MapReader.tableOf(object) != null
+                        ? " has no entry " + accessor
+                        : " has no field " + accessor));
         }
         return object.getValue(field);
     }

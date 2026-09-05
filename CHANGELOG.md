@@ -1,5 +1,26 @@
 # Change Log
 
+## 0.1.10 — pre-release
+
+### Added
+
+- **Logpoints.** A breakpoint with a log message prints and carries on instead of
+  stopping — right-click in the gutter, Add Logpoint. `{expressions}` in braces
+  are read the same way a hover is, so `iteration {i}, so far {doubled}` prints
+  `iteration 2, so far [105, 106]`. Being able to see a value on every pass
+  without stopping the application on every pass is most of what print debugging
+  was for, and unlike a `println` it does not need a recompile or a restart.
+- Lists and maps are written out in a log line rather than shown as an object id.
+  The pane can say `ArrayList (id=14513)` and let you expand it; a line of text
+  cannot. Capped at eight entries and two levels deep.
+- **Hit counts.** `>`, `>=`, `=`, `<`, `<=` and `%` with a number, and a bare
+  number meaning "from this hit onward" — so `=100` stops on the hundredth
+  iteration only, and `%10` on every tenth. The count is of hits that were going
+  to stop, so the duplicate a doubly-compiled Groovy line produces does not
+  advance it. A hit count that cannot be read says so on the breakpoint rather
+  than being ignored, which would look like the debugger stopping when it should
+  not.
+
 ## 0.1.9 — pre-release
 
 ### Fixed

@@ -183,6 +183,10 @@ public final class DebugSession {
         // Not yet: conditional breakpoints need Groovy expressions compiled and
         // evaluated inside the target VM, which is the T2 work item.
         capabilities.put("supportsConditionalBreakpoints", Boolean.FALSE);
+        // These two need no expression compiler: a hit count is arithmetic, and a
+        // log message is the path reading that already answers hovers.
+        capabilities.put("supportsHitConditionalBreakpoints", Boolean.TRUE);
+        capabilities.put("supportsLogPoints", Boolean.TRUE);
         capabilities.put("supportsEvaluateForHovers", Boolean.TRUE);
         capabilities.put("supportsSetVariable", Boolean.FALSE);
         capabilities.put("supportsExceptionInfoRequest", Boolean.TRUE);
@@ -264,18 +268,22 @@ public final class DebugSession {
             return;
         }
 
-        List<Integer> lines = new ArrayList<>();
+        List<BreakpointBinder.Spec> specs = new ArrayList<>();
         Object raw = args.get("breakpoints");
         if (raw instanceof List) {
             for (Object item : (List<?>) raw) {
                 if (item instanceof Map) {
-                    lines.add((int) number(((Map<?, ?>) item).get("line"), 0));
+                    Map<?, ?> entry = (Map<?, ?>) item;
+                    specs.add(new BreakpointBinder.Spec(
+                            (int) number(entry.get("line"), 0),
+                            text(entry.get("logMessage")),
+                            text(entry.get("hitCondition"))));
                 }
             }
         }
 
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("breakpoints", binder.setBreakpoints(path, lines));
+        body.put("breakpoints", binder.setBreakpoints(path, specs));
         transport.sendResponse(request, body);
     }
 
@@ -696,10 +704,74 @@ public final class DebugSession {
             // The other half of a line Groovy compiled twice; see StopDeduper.
             return null;
         }
+        BreakpointBinder.Hit hit = binder.onHit((BreakpointRequest) event.request());
+        if (hit.logMessage != null) {
+            // A logpoint. Print where a stop would have been and carry on -- which
+            // is the whole point of one: seeing a value on every pass through a
+            // line without stopping the application on each of them.
+            printLog(hit.logMessage, thread, event.location());
+            return null;
+        }
+        if (!hit.stop) {
+            return null; // the hit count has not reached this hit yet
+        }
         stoppedThread = thread;
         variables.reset();
-        List<Integer> ids = binder.idsFor((BreakpointRequest) event.request());
-        return () -> sendStopped("breakpoint", thread, ids);
+        return () -> sendStopped("breakpoint", thread, hit.ids);
+    }
+
+    /**
+     * A logpoint's message, with {@code {expression}} replaced by what it reads.
+     *
+     * <p>The expressions are read the same way a hover is, by walking fields and
+     * keys, so the same limit applies: a call or an operator is refused. Its reason
+     * is printed in place of the value rather than dropped, because a log line that
+     * silently says nothing about {@code {list.size()}} is worse than one that says
+     * why it cannot.
+     */
+    private void printLog(String template, ThreadReference thread, Location location) {
+        StringBuilder out = new StringBuilder(template.length() + 16);
+        StackFrame frame = null;
+        ObjectReference webRequest = null;
+        for (int i = 0; i < template.length(); i++) {
+            char c = template.charAt(i);
+            if (c != '{') {
+                out.append(c);
+                continue;
+            }
+            int close = template.indexOf('}', i);
+            if (close < 0) {
+                out.append(template.substring(i));
+                break;
+            }
+            String expression = template.substring(i + 1, close);
+            i = close;
+            try {
+                if (frame == null) {
+                    frame = thread.frame(0);
+                    webRequest = GrailsWebScope.find(vm, thread);
+                }
+                out.append(variables.plain(
+                        PathEvaluator.evaluate(expression, frame, webRequest)));
+            } catch (PathEvaluator.Unsupported e) {
+                out.append('<').append(e.getMessage()).append('>');
+            } catch (Exception e) {
+                out.append('<').append(e.getClass().getSimpleName()).append('>');
+            }
+        }
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("category", "stdout");
+        body.put("output", out.append('\n').toString());
+        Path file = sources.find(location);
+        if (file != null) {
+            Map<String, Object> source = new LinkedHashMap<>();
+            source.put("name", file.getFileName().toString());
+            source.put("path", file.toString());
+            body.put("source", source);
+            body.put("line", Math.max(location.lineNumber(), 0));
+        }
+        transport.sendEvent("output", body);
     }
 
     /** The stand-in step over reached the next line of the frame. */
@@ -1096,6 +1168,15 @@ public final class DebugSession {
     private static Map<String, Object> arguments(Map<String, Object> request) {
         Object args = request.get("arguments");
         return args instanceof Map ? (Map<String, Object>) args : new LinkedHashMap<>();
+    }
+
+    /** A string field of a request, or null when it was absent or empty. */
+    private static String text(Object value) {
+        if (!(value instanceof String)) {
+            return null;
+        }
+        String string = (String) value;
+        return string.isEmpty() ? null : string;
     }
 
     private static long number(Object value, long fallback) {
