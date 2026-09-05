@@ -18,6 +18,7 @@ import com.sun.jdi.event.Event;
 import com.sun.jdi.event.ExceptionEvent;
 import com.sun.jdi.event.EventQueue;
 import com.sun.jdi.event.EventSet;
+import com.sun.jdi.event.MethodEntryEvent;
 import com.sun.jdi.event.MethodExitEvent;
 import com.sun.jdi.event.StepEvent;
 import com.sun.jdi.event.VMDeathEvent;
@@ -26,6 +27,7 @@ import com.sun.jdi.request.BreakpointRequest;
 import com.sun.jdi.request.EventRequest;
 import com.sun.jdi.request.EventRequestManager;
 import com.sun.jdi.request.ExceptionRequest;
+import com.sun.jdi.request.MethodEntryRequest;
 import com.sun.jdi.request.MethodExitRequest;
 import com.sun.jdi.request.StepRequest;
 import org.groovydap.dap.DapTransport;
@@ -451,13 +453,19 @@ public final class DebugSession {
         stepDepths.put(thread.uniqueID(), depth);
         stepOriginFrames.put(thread.uniqueID(), frameCountOf(thread));
         restepBudget.put(thread.uniqueID(), MAX_AUTOMATIC_RESTEPS);
-        // Step over never goes through JDI stepping. Where it lands was not
-        // predictable here: issuing one partway through a line ran to the end of
-        // the method, and after three attempts at characterising when else it does
-        // that -- exclusion filters, count filters, the shape of the previous stop
-        // -- a step from the first bytecode of a line did it too. The breakpoint
-        // form says exactly what a step over means and is not subject to any of it.
-        if (depth != StepRequest.STEP_OVER || !armLineStep(thread)) {
+        // Step over and step into never go through JDI stepping. Where a step over
+        // lands was not predictable here: issuing one partway through a line ran to
+        // the end of the method, and after three attempts at characterising when
+        // else it does that -- exclusion filters, count filters, the shape of the
+        // previous stop -- a step from the first bytecode of a line did it too. A
+        // step into has a different problem with the same shape: it cannot enter a
+        // @Transactional method, because the entry runs through the transaction
+        // template and the step completes back on the calling line. Both are said
+        // directly instead, out of breakpoints, and neither is subject to any of
+        // that. Step out still uses JDI, where it was measured working.
+        boolean armed = depth == StepRequest.STEP_OVER ? armLineStep(thread)
+                : depth == StepRequest.STEP_INTO && armStepInto(thread);
+        if (!armed) {
             requestStep(thread, depth);
         }
 
@@ -503,10 +511,17 @@ public final class DebugSession {
             assistOriginFrames = originFrames;
             EventRequestManager erm = vm.eventRequestManager();
 
-            Set<Integer> armed = new java.util.HashSet<>();
+            // Every location of every other line, not the first of each. Groovy
+            // compiles a statement twice under one line number and the copy that
+            // runs is not always the first: line 34 of the target maps to bci 26
+            // and bci 73, and only 73 ever executes, so arming the first location
+            // armed the path that never runs. Measured as a step into that skipped
+            // the last line of the method and came out in the caller. This is the
+            // same rule BreakpointBinder follows, and for the same reason; the
+            // duplicate it can cause is removed by clearing the whole set on the
+            // first arrival.
             for (Location location : lines) {
-                if (location.lineNumber() == here.lineNumber()
-                        || !armed.add(location.lineNumber())) {
+                if (location.lineNumber() == here.lineNumber()) {
                     continue;
                 }
                 BreakpointRequest at = erm.createBreakpointRequest(location);
@@ -527,6 +542,74 @@ public final class DebugSession {
             clearStepAssist();
             return false;
         }
+    }
+
+    /**
+     * A step into, said directly: stop wherever the project's code runs next.
+     *
+     * <p>Which is either a method it enters or, if this line calls nothing of the
+     * user's, the next line of this one -- so it is a step over with a method entry
+     * request added. That last part is not a compromise; it is what a step into
+     * means on a line with no call in it.
+     *
+     * <p>The entry request is why this works on a {@code @Transactional} method
+     * where a JDI step into does not. Grails routes the call through the
+     * transaction template, so the step completes back on the calling line, having
+     * run the whole method. Entering {@code $tt__foo} is a fact about the target
+     * that no amount of stepping reaches, and asking for it directly costs one
+     * request. The wrappers on the way -- {@code foo}, the callback closure,
+     * {@code foo$0} -- are passed over by the same rule everything else uses: no
+     * line number, nowhere to stop.
+     *
+     * @return false if the project's packages could not be worked out, in which
+     *     case an unfiltered method entry request would be far too expensive and
+     *     the caller should fall back to JDI stepping
+     */
+    private boolean armStepInto(ThreadReference thread) {
+        List<String> packages = sources.packageFilters();
+        if (packages.isEmpty()) {
+            return false;
+        }
+        if (!armLineStep(thread)) {
+            return false;
+        }
+        try {
+            MethodEntryRequest entry = vm.eventRequestManager().createMethodEntryRequest();
+            entry.addThreadFilter(thread);
+            for (String pattern : packages) {
+                entry.addClassFilter(pattern);
+            }
+            entry.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+            entry.enable();
+            stepAssist.add(entry);
+            return true;
+        } catch (Exception e) {
+            clearStepAssist();
+            return false;
+        }
+    }
+
+    /**
+     * A method of the project's was entered while a step into was waiting.
+     *
+     * <p>Reports nothing for a method with no line table -- the three wrappers
+     * Grails puts around a transactional method are entered before the body is --
+     * and stays armed, so the next entry is still considered.
+     */
+    private Runnable onAssistEntry(MethodEntryEvent event) {
+        if (!stepAssist.contains(event.request())) {
+            return null;
+        }
+        Location at = event.location();
+        if (at.lineNumber() < 0 || isOutsideProject(at)) {
+            return null; // a wrapper, or a class that only looks like the project's
+        }
+        ThreadReference thread = event.thread();
+        clearStepAssist();
+        stoppedThread = thread;
+        variables.reset();
+        deduper.forget(thread);
+        return () -> sendStopped("step", thread, new ArrayList<>());
     }
 
     private void clearStepAssist() {
@@ -661,6 +744,8 @@ public final class DebugSession {
                                 ? onAssistArrival(hit.thread())
                                 : onBreakpointHit(hit));
                     }
+                } else if (event instanceof MethodEntryEvent) {
+                    announce = orFirst(announce, onAssistEntry((MethodEntryEvent) event));
                 } else if (event instanceof MethodExitEvent) {
                     announce = orFirst(announce, onAssistExit((MethodExitEvent) event));
                 } else if (event instanceof ExceptionEvent) {

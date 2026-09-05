@@ -36,6 +36,49 @@ public final class SourceLocator {
         }
     }
 
+    /**
+     * Class name patterns covering the project's own code, for a class filter.
+     *
+     * <p>Taken from the directories: a package is a directory under a source root,
+     * so {@code grails-app/services/dapspike} means {@code dapspike.*}. Only the
+     * first segment is used, which is broader than necessary and exactly what a
+     * filter wants -- it has to match the closure classes and the methods Grails
+     * generates as well as the ones in the file.
+     *
+     * <p>Used where a filter is the only affordable way to ask a question of every
+     * method entered: unfiltered, a single Grails request enters tens of thousands
+     * of methods.
+     */
+    public synchronized List<String> packageFilters() {
+        List<String> filters = new ArrayList<>();
+        for (Path root : roots) {
+            try (java.util.stream.Stream<Path> children = Files.list(root)) {
+                children.filter(Files::isDirectory)
+                        .map(child -> child.getFileName().toString())
+                        .filter(SourceLocator::looksLikePackage)
+                        .map(name -> name + ".*")
+                        .filter(filter -> !filters.contains(filter))
+                        .forEach(filters::add);
+            } catch (Exception e) {
+                // an unreadable root is not a reason to fail the step
+            }
+        }
+        return filters;
+    }
+
+    private static boolean looksLikePackage(String name) {
+        if (name.isEmpty() || !Character.isLowerCase(name.charAt(0))) {
+            return false;
+        }
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '_') {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** The absolute path of the source for this location, or null. */
     public synchronized Path find(Location location) {
         String relative;

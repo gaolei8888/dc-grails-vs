@@ -735,6 +735,68 @@ index:8 (断点) → index:8 → index:9 → index:9 → index:10 → SpikeServi
 **未验**:编辑器里没试过(harness 直接发 `logMessage` / `hitCondition` 字段,和 VSCode 发的
 是同一个 DAP 形状,但 UI 那一层没走过)。
 
+### 7.6 stepOut 复验与 stepIn 进入 `@Transactional`(2026-09-05)
+
+#### stepOut:是好的,之前只是没验过
+
+`runcase.sh ... stepOut`,断点下在嵌套闭包体(行 25,用 `HITCONDS='25:=1'` 让它只停一次,
+否则下一次 `j` 迭代会先命中,把 step 事件盖掉):
+
+```
+25(内层闭包)→ 24(外层闭包)→ 22($tt__transactionalMethod)→ index:9(controller)
+```
+
+中间三个没有行号表的包装帧(`$_transactionalMethod_closure2`、`transactionalMethod`、
+`transactionalMethod$0`,全是 `line -1`)被正确跳过。
+
+**从最外层的项目帧再往外 stepOut 不产生任何事件**,请求直接跑完 —— 形状和 §7.3 那个 step over
+缺陷一样。我据此猜「step 请求被留在线程上,该线程从此永久单步」,并**实验证伪**:随后三次请求
+151 / 148 / 149 ms,没有多余停顿,也没有新的 step 事件。既然量不出代价,就不改。行为上它等同于
+continue —— 你自己的代码之上本来就没有可停的地方。
+
+#### stepIn:改成和 step over 同一套办法
+
+改之前(实测,不是文档里那句「步不进」那么轻):
+
+```
+STOP 1  controller:9   断点
+STOP 2  controller:9   ← stepIn 回到同一行,整个事务方法已经跑完
+STOP 3  controller:10  ← 还是没进去
+STOP 4  plainMethod:34 ← @NotTransactional 的能进
+```
+
+原因和 step over 那条是同一个:`@Transactional` 的入口要穿过事务模板,JDI 的 STEP_INTO
+在调用行上就算完成了。**「进入了项目里的某个方法」是目标 VM 的一个事实,不是靠单步能凑出来的**,
+直接问它就行 —— 一个 `MethodEntryRequest`,线程过滤 + 项目包过滤,加上 step over 已经在用的
+「本方法其余行的断点 + 方法退出」,谁先到算谁。
+
+包过滤来自目录:源根下的一级子目录名就是包名(`grails-app/services/dapspike` → `dapspike.*`)。
+**不能不加过滤** —— 一次 Grails 请求要进入几万个方法。取不到包名时退回 JDI 单步。
+
+没有行号表的方法(`transactionalMethod`、回调闭包、`transactionalMethod$0`)在到达时被跳过,
+请求**保持武装**继续等,所以三层包装不需要认名字。改后:
+
+```
+controller:9 → $tt__transactionalMethod:20 → 21 → 22 → closure5.doCall:23
+```
+
+最后一步是在 `(1..3).each { i ->` 上 stepIn,**进了闭包体**。构造器没有造成多余停顿。
+
+#### 顺带抓出来的一个真缺陷:每行只装第一个 location
+
+回归 `@NotTransactional` 的 stepIn 时发现 `plainMethod` 的**第 35 行被整个跳过**,直接回到
+controller:11,而且 trace 里那一段一个事件都没有。
+
+`armLineStepAt` 当时按行号去重,每行只装第一个 location —— 正是 §7.2 ③ 记过的坑:行 34 映射到
+bci 26 与 73,**只有 73 会执行**。装第一个就是装了那条永远不跑的路径。
+
+改成**每行的每个 location 全装**(与 `BreakpointBinder` 同一条规则)。重复停顿不会发生:第一次
+到达就 `clearStepAssist()` 把整组删掉,同一个 `EventSet` 内也只认第一个断点事件。回归后
+step over 的序列与 0.1.9 逐条相同。
+
+**这条缺陷 0.1.9 就存在**,只是当时验的 `$tt__transactionalMethod` 每行的第一个 location 恰好
+就是会执行的那个,所以没露出来。
+
 ### T2 — 好用(再 2~4 周)
 
 - **条件断点** —— 需在目标 VM 内求值 Groovy 表达式。最省事的路子是把表达式编成闭包后在目标 VM 里 `invokeMethod`。**这是最大的一块。**
