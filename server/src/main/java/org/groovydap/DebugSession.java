@@ -163,6 +163,7 @@ public final class DebugSession {
             case "stackTrace": onStackTrace(request); break;
             case "scopes": onScopes(request); break;
             case "variables": onVariables(request); break;
+            case "setVariable": onSetVariable(request); break;
             case "continue": onContinue(request); break;
             case "next": onStep(request, StepRequest.STEP_OVER); break;
             case "stepIn": onStep(request, StepRequest.STEP_INTO); break;
@@ -193,7 +194,7 @@ public final class DebugSession {
         capabilities.put("supportsHitConditionalBreakpoints", Boolean.TRUE);
         capabilities.put("supportsLogPoints", Boolean.TRUE);
         capabilities.put("supportsEvaluateForHovers", Boolean.TRUE);
-        capabilities.put("supportsSetVariable", Boolean.FALSE);
+        capabilities.put("supportsSetVariable", Boolean.TRUE);
         capabilities.put("supportsExceptionInfoRequest", Boolean.TRUE);
         capabilities.put("exceptionBreakpointFilters", List.of(
                 filter("uncaught", "Uncaught exceptions", true),
@@ -400,6 +401,35 @@ public final class DebugSession {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("variables", variables.children(reference));
         transport.sendResponse(request, body);
+    }
+
+    /**
+     * Changes a value while the target is stopped.
+     *
+     * <p>Writes only: a local, a field, an array element, a map entry that is
+     * already there. Making a boxed number is the one thing that calls into the
+     * application -- see ValueFactory -- because JDI will not put an int into a
+     * slot typed Integer and Groovy types nearly everything that way.
+     */
+    private void onSetVariable(Map<String, Object> request) {
+        Map<String, Object> args = arguments(request);
+        int reference = (int) number(args.get("variablesReference"), 0);
+        String name = String.valueOf(args.get("name"));
+        String value = String.valueOf(args.get("value"));
+        try {
+            Map<String, Object> described =
+                    variables.set(reference, name, value, stoppedThread);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("value", described.get("value"));
+            body.put("type", described.get("type"));
+            body.put("variablesReference", described.get("variablesReference"));
+            transport.sendResponse(request, body);
+        } catch (PathEvaluator.Unsupported e) {
+            transport.sendError(request, e.getMessage());
+        } catch (Exception e) {
+            transport.sendError(request, e.getClass().getSimpleName()
+                    + (e.getMessage() == null ? "" : ": " + e.getMessage()));
+        }
     }
 
     /**

@@ -209,6 +209,23 @@ reads as a broken debugger rather than as a condition to rewrite.
 With a hit count as well, the count advances only when the condition was true:
 `i > 1` with `=2` stops the second time `i > 1` holds.
 
+## Changing a value
+
+A local, a field, an array element or an existing map entry can be changed from
+the variables pane while the target is stopped: numbers, strings, booleans and
+null. Setting `seed` from 4 to 7 at the top of a service method changes what the
+application then returns.
+
+A local that a closure captured is written inside the `groovy.lang.Reference` it
+is boxed in, not over it — replacing the box would leave the closure holding the
+old one. A map entry is changed in place; a key that is not there cannot be added
+this way.
+
+This is the one place the debugger runs code in your application. JDI will not put
+an int into a slot typed `java.lang.Integer`, and Groovy types nearly everything
+that way, so making a boxed number calls `valueOf` on the box class — a JDK static
+that takes no locks — single-threaded. Reading a value never runs anything.
+
 ## Known issues
 
 - **Attach only.** There is no launch configuration; the app is started by the

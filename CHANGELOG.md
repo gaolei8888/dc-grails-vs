@@ -1,5 +1,30 @@
 # Change Log
 
+## 0.1.12 — pre-release
+
+### Added
+
+- **Change a value while stopped.** Locals, fields, array elements and map
+  entries that already exist can be set from the variables pane; numbers,
+  strings, booleans and null. Measured end to end: setting `seed` from 4 to 7 at
+  the top of a service method changed the response the application returned.
+- A local a closure captured is written inside its `groovy.lang.Reference` rather
+  than over it. Replacing the box would leave the closure holding the old one, so
+  the program would not see the change.
+- A map entry is changed by writing the entry itself, which is the write `put`
+  would do for a key that is already there. A key that is not there cannot be
+  added this way, and says so rather than appearing to work.
+
+### Note
+
+- **Making a boxed number calls `valueOf` in the application.** JDI will not put
+  an int into a slot typed `java.lang.Integer`, and Groovy types nearly
+  everything that way, so setting a variable would otherwise be able to change
+  almost nothing. This is the one place the adapter runs code in the target: it
+  is limited to `valueOf` on the eight JDK box classes, which take no locks and
+  have no side effects, and it runs single-threaded. Reading — a hover, a
+  logpoint, a condition, the pane — still never runs anything.
+
 ## 0.1.11 — pre-release
 
 ### Added

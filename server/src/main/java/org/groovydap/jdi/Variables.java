@@ -2,6 +2,7 @@ package org.groovydap.jdi;
 
 import com.sun.jdi.AbsentInformationException;
 import com.sun.jdi.ArrayReference;
+import com.sun.jdi.ArrayType;
 import com.sun.jdi.Field;
 import com.sun.jdi.IntegerValue;
 import com.sun.jdi.LocalVariable;
@@ -9,6 +10,7 @@ import com.sun.jdi.ObjectReference;
 import com.sun.jdi.StackFrame;
 import com.sun.jdi.StringReference;
 import com.sun.jdi.ThreadReference;
+import com.sun.jdi.Type;
 import com.sun.jdi.Value;
 
 import java.util.ArrayList;
@@ -40,6 +42,17 @@ public final class Variables {
     /** What a variables handle refers to. */
     private abstract static class Node {
         abstract List<Map<String, Object>> children();
+
+        /**
+         * Writes one of this node's slots.
+         *
+         * <p>Refusing is the default: a change that quietly went nowhere would be
+         * worse than one that was never offered.
+         */
+        Map<String, Object> set(String name, String text, ThreadReference on)
+                throws PathEvaluator.Unsupported {
+            throw new PathEvaluator.Unsupported(name + " cannot be changed from here");
+        }
     }
 
     private final class FrameLocals extends Node {
@@ -78,6 +91,43 @@ public final class Variables {
             }
             return out;
         }
+
+        @Override
+        Map<String, Object> set(String name, String text, ThreadReference on)
+                throws PathEvaluator.Unsupported {
+            try {
+                if (name.equals("this")) {
+                    throw new PathEvaluator.Unsupported("this cannot be reassigned");
+                }
+                StackFrame frame = thread.frame(frameIndex);
+                LocalVariable local = frame.visibleVariableByName(name);
+                if (local == null) {
+                    throw new PathEvaluator.Unsupported("no local named " + name + " here");
+                }
+                // A local a closure captured lives in a groovy.lang.Reference. The
+                // slot holds the box, so the value goes inside it: assigning the
+                // slot would replace the box and leave the closure holding the old
+                // one, which is a change the program would not see.
+                Value current = frame.getValue(local);
+                if (current instanceof ObjectReference
+                        && Values.unwrapReference(current) != current) {
+                    return setField((ObjectReference) current, "value", text, on);
+                }
+                Value value = ValueFactory.of(text, local.type(), on);
+                // Making a boxed number calls valueOf in the target, and an
+                // invocation resumes the thread to run it -- which invalidates
+                // every StackFrame taken before it. The frame has to be fetched
+                // again; measured as "Thread has been resumed" on setting a local
+                // typed java.lang.Integer, which in Groovy is most of them. The
+                // LocalVariable survives: it belongs to the method, not the frame.
+                thread.frame(frameIndex).setValue(local, value);
+                return describe(name, value, local.typeName());
+            } catch (PathEvaluator.Unsupported e) {
+                throw e;
+            } catch (Exception e) {
+                throw new PathEvaluator.Unsupported("could not set " + name + ": " + e);
+            }
+        }
     }
 
     private final class ObjectFields extends Node {
@@ -115,6 +165,12 @@ public final class Variables {
             }
             return out;
         }
+
+        @Override
+        Map<String, Object> set(String name, String text, ThreadReference on)
+                throws PathEvaluator.Unsupported {
+            return setField(object, name, text, on);
+        }
     }
 
     private final class ArrayElements extends Node {
@@ -140,6 +196,26 @@ public final class Variables {
                 out.add(error(e));
             }
             return out;
+        }
+
+        @Override
+        Map<String, Object> set(String name, String text, ThreadReference on)
+                throws PathEvaluator.Unsupported {
+            String index = name.startsWith("[") && name.endsWith("]")
+                    ? name.substring(1, name.length() - 1) : name;
+            try {
+                Type component = array.referenceType() instanceof ArrayType
+                        ? ((ArrayType) array.referenceType()).componentType() : null;
+                Value value = ValueFactory.of(text, component, on);
+                array.setValue(Integer.parseInt(index.trim()), value);
+                return describe(name, value, null);
+            } catch (NumberFormatException e) {
+                throw new PathEvaluator.Unsupported(name + " is not an index");
+            } catch (PathEvaluator.Unsupported e) {
+                throw e;
+            } catch (Exception e) {
+                throw new PathEvaluator.Unsupported("could not set " + name + ": " + e);
+            }
         }
     }
 
@@ -175,6 +251,12 @@ public final class Variables {
                 out.add(error(e));
             }
             return out;
+        }
+
+        @Override
+        Map<String, Object> set(String name, String text, ThreadReference on)
+                throws PathEvaluator.Unsupported {
+            return setField(object, name, text, on);
         }
     }
 
@@ -235,6 +317,51 @@ public final class Variables {
         private String label(Value key) {
             return key instanceof StringReference
                     ? ((StringReference) key).value() : String.valueOf(render(key));
+        }
+
+        /**
+         * Changes what a key maps to, by writing the entry node's value field.
+         *
+         * <p>The same write put would do for a key that is already there: no
+         * rehashing, no resize, no new entry, so it needs no call into the
+         * application. A key that is not there cannot be added this way and says
+         * so, rather than appearing to work.
+         */
+        @Override
+        Map<String, Object> set(String name, String text, ThreadReference on)
+                throws PathEvaluator.Unsupported {
+            try {
+                ArrayReference table = tableOf(map);
+                if (table == null) {
+                    throw new PathEvaluator.Unsupported("this is not a map any more");
+                }
+                for (Value slot : table.getValues()) {
+                    ObjectReference node = slot instanceof ObjectReference
+                            ? (ObjectReference) slot : null;
+                    int guard = 0;
+                    while (node != null && guard++ < 64) {
+                        Field keyField = node.referenceType().fieldByName("key");
+                        Field valueField = valueFieldOf(node);
+                        if (keyField == null || valueField == null) {
+                            break;
+                        }
+                        if (label(node.getValue(keyField)).equals(name)) {
+                            Value value = ValueFactory.of(text, valueField.type(), on);
+                            node.setValue(valueField, value);
+                            return describe(name, value, null);
+                        }
+                        Field nextField = node.referenceType().fieldByName("next");
+                        Value next = nextField == null ? null : node.getValue(nextField);
+                        node = next instanceof ObjectReference ? (ObjectReference) next : null;
+                    }
+                }
+                throw new PathEvaluator.Unsupported("no entry " + name
+                        + "; a key that is not there cannot be added by setting it");
+            } catch (PathEvaluator.Unsupported e) {
+                throw e;
+            } catch (Exception e) {
+                throw new PathEvaluator.Unsupported("could not set " + name + ": " + e);
+            }
         }
     }
 
@@ -400,6 +527,51 @@ public final class Variables {
     /** A handle over just these fields of this object, in this order. */
     public synchronized int curatedHandle(ObjectReference object, List<String> fieldNames) {
         return register(new CuratedFields(object, fieldNames));
+    }
+
+    /**
+     * Writes a slot of whatever this handle refers to.
+     *
+     * @throws PathEvaluator.Unsupported with the reason, which the client shows
+     */
+    public synchronized Map<String, Object> set(int handle, String name, String text,
+                                               ThreadReference on)
+            throws PathEvaluator.Unsupported {
+        Node node = handles.get(handle);
+        if (node == null) {
+            throw new PathEvaluator.Unsupported(
+                    "that variable belongs to an earlier stop and is gone");
+        }
+        if (on == null) {
+            throw new PathEvaluator.Unsupported("nothing is stopped");
+        }
+        return node.set(name, text, on);
+    }
+
+    /** One field of one object, with a Reference unwrapped on the way in. */
+    private Map<String, Object> setField(ObjectReference object, String name, String text,
+                                         ThreadReference on)
+            throws PathEvaluator.Unsupported {
+        Field field = object.referenceType().fieldByName(name);
+        if (field == null) {
+            throw new PathEvaluator.Unsupported(
+                    object.referenceType().name() + " has no field " + name);
+        }
+        try {
+            Value current = object.getValue(field);
+            if (current instanceof ObjectReference
+                    && Values.unwrapReference(current) != current) {
+                return setField((ObjectReference) current, "value", text, on);
+            }
+            Value value = ValueFactory.of(text, field.type(), on);
+            object.setValue(field, value);
+            return describe(name, value, field.typeName());
+        } catch (PathEvaluator.Unsupported e) {
+            throw e;
+        } catch (Exception e) {
+            // A final field is the usual one: the JVM refuses the write.
+            throw new PathEvaluator.Unsupported("could not set " + name + ": " + e);
+        }
     }
 
     public synchronized List<Map<String, Object>> children(int handle) {

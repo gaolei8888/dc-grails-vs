@@ -828,6 +828,38 @@ step over 的序列与 0.1.9 逐条相同。
 logpoint、条件四处都要做这两件事,各留一份装箱类型表迟早会不一致 —— 显示成一个样、比较成另一个样。
 `PathEvaluator` 现在在每一步和返回时都解包,所以 `x.name` 在 `x` 是被闭包捕获的局部变量时也能走通。
 
+### 7.8 setVariable(2026-09-05)
+
+写局部变量、字段、数组元素、已存在的 map 项。写入本身都是 JDI 的直接写,不经过应用代码;
+唯一的例外是**造装箱值**,见下。
+
+三件被实测逼出来的事:
+
+1. **闭包捕获的局部变量要写进 `Reference` 里,不能覆盖它。** 覆盖等于换了个盒子,闭包手里还是
+   旧的,程序看不到这次修改。
+2. **造装箱值必须调用 `valueOf`,而调用会让线程先跑起来 —— 之前拿到的 `StackFrame` 全部作废。**
+   实测报 `InvalidStackFrameException: Thread has been resumed`,出现在写一个类型为
+   `java.lang.Integer` 的局部变量时(Groovy 里绝大多数局部变量都是这个类型)。所以顺序必须是
+   「先造值,再重新取帧,最后写」。`LocalVariable` 不受影响,它属于方法不属于帧。
+   案例 B(写 `Reference` 的 `value` 字段)没踩到,因为 `ObjectReference` 不会因 resume 失效。
+3. **`owningThread()` 不是「可以用来调用的线程」**,是「持有该对象监视器的线程」,通常为 null。
+   第一版用它去拿 VM,直接 NPE。停下来的那个线程必须显式传进去。
+
+为什么允许调 `valueOf`:JDI 不接受把 int 放进 `java.lang.Integer` 的槽,而 Groovy 几乎全是装箱的,
+不调就等于这个功能改不了任何东西。范围限死在 8 个 JDK 装箱类的 `valueOf`(不加锁、无副作用),
+且 `INVOKE_SINGLE_THREADED`。**读的那一侧仍然一行代码都不跑** —— hover、logpoint、条件、变量面板。
+
+实测(靶子同上,`SETVAR` 环境变量,证据是 HTTP 响应而不是面板):
+
+| 写什么 | 结果 |
+|---|---|
+| 行 20 `seed`(int 原始类型)4 → 7 | 响应变成 `base:107`、`doubled:[108, 109, 215, 216, 322, 323]` |
+| 行 21 `base`(装箱 + `Reference`)104 → 999 | 响应变成 `doubled:[1000, 1001, 1999, 2000, 2998, 2999]` |
+| 行 25 `j`(闭包帧的装箱参数)1 → 50 | 响应第一项变成 `154`(= 104 + 50),其余不变 |
+| `this` | 拒绝 |
+| `seed = abc` | 拒绝,「is not a whole number」 |
+| Grails scope 的 `params = 1` | 拒绝,JDI 的类型错误原样带出 |
+
 ### T2 — 好用(再 2~4 周)
 
 - **条件断点** —— 需在目标 VM 内求值 Groovy 表达式。最省事的路子是把表达式编成闭包后在目标 VM 里 `invokeMethod`。**这是最大的一块。**
