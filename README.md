@@ -104,8 +104,13 @@ One line of markup becomes several statements in several classes, and the
 breakpoint goes on the first of them, so a line stops once per pass rather than
 two or three times. A line inside a `<g:each>` stops once per iteration.
 
-**Precompiled GSPs are not supported.** A production build compiles pages ahead
-of time and keeps their line numbers in a file rather than in memory.
+Stepping works inside a page: step over moves a line of markup at a time, and
+step into enters a tag body.
+
+Grails 7 compiles pages at runtime, in a packaged war as much as in a
+development run, so there is no precompiled case to handle — but a page compiled
+from inside a war has a different path, and a breakpoint set on your copy of it
+will not bind against a deployed application.
 
 ## Debugging tests
 
@@ -255,9 +260,10 @@ that takes no locks — single-threaded. Reading a value never runs anything.
   Gradle wrapper and the adapter attaches to it.
 - A hover, a watch, a logpoint and a condition all read paths rather than
   evaluating expressions. `list.size()` is refused by name, with the reason.
-- **Stepping inside a GSP is not measured.** Breakpoints are; stepping steps
-  through generated lines and may pause more than once on a line of markup.
-- Precompiled GSPs are not supported (see above).
+- **A GSP is found by its path**, so a breakpoint binds against an application
+  running from the sources you have open. An application running from a packaged
+  war compiles the same page from a different absolute path, and the breakpoint
+  will not bind against it.
 
 ## Star it
 

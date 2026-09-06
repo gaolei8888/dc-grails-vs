@@ -1,5 +1,40 @@
 # Change Log
 
+## 0.1.15 — pre-release
+
+### Fixed
+
+- **Step into produced nothing at all, in any project with more than one
+  top-level package.** The method entry request it arms carried one class filter
+  per package, and JDI ANDs the filters on a request rather than OR-ing them, so
+  a class had to be in every package at once. With a single package — which is
+  what the one project this was measured on had — it worked, and it silently
+  stopped working the moment there were two. One request per pattern now.
+- **Step over inside a GSP no longer stops twice on one line of markup.** It
+  compared generated line numbers, and one page line is several generated lines:
+  stepping off page line 4 stopped on page line 9, then on page line 9 again,
+  with the highlight not moving. It compares the line you see now.
+
+### Added
+
+- **Step into enters a GSP tag body.** A page compiles into a class in the
+  default package, which no package filter can match, so stepping into
+  `<g:each>` or a custom tag never reached the closure the body compiled into.
+  Measured: from the line that invokes the body, into the body at the page line
+  it starts on.
+- An icon, so the Marketplace listing is not a placeholder letter. Three bars and
+  a play triangle, the same glyph as the activity bar, rasterised by
+  `scripts/make-icon.py` — deliberately not the Grails logo, which is a
+  trademark.
+
+### Note
+
+- **Grails 7.2.3 does not precompile GSPs at all.** There is no `compileGsp`
+  task, and a packaged war carries the page source rather than a compiled class,
+  so the precompiled-page machinery inside Grails is never exercised by this
+  version's build and nothing here needs to read it. Pages are compiled at
+  runtime in a war exactly as in a development run.
+
 ## 0.1.14 — pre-release
 
 ### Added

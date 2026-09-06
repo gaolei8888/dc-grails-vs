@@ -609,8 +609,14 @@ public final class DebugSession {
             // same rule BreakpointBinder follows, and for the same reason; the
             // duplicate it can cause is removed by clearing the whole set on the
             // first arrival.
+            int from = displayLine(here);
             for (Location location : lines) {
-                if (location.lineNumber() == here.lineNumber()) {
+                // The line the user sees, not the one in the class file. A GSP
+                // page line is several generated lines -- line 9 of the target is
+                // generated 37 and 38 -- so comparing generated lines produced a
+                // step over that stopped twice on one line of markup without the
+                // highlight moving.
+                if (displayLine(location) == from) {
                     continue;
                 }
                 BreakpointRequest at = erm.createBreakpointRequest(location);
@@ -655,7 +661,15 @@ public final class DebugSession {
      *     the caller should fall back to JDI stepping
      */
     private boolean armStepInto(ThreadReference thread) {
-        List<String> packages = sources.packageFilters();
+        List<String> packages = new ArrayList<>(sources.packageFilters());
+        // A GSP compiles into a class in the default package, named after the
+        // page's path, so no package filter built from directory names can match
+        // it -- and without this, stepping into a tag body from a page never
+        // enters the closure the body compiled into.
+        String page = currentGspClass(thread);
+        if (page != null) {
+            packages.add(page + "*");
+        }
         if (packages.isEmpty()) {
             return false;
         }
@@ -663,19 +677,39 @@ public final class DebugSession {
             return false;
         }
         try {
-            MethodEntryRequest entry = vm.eventRequestManager().createMethodEntryRequest();
-            entry.addThreadFilter(thread);
+            // One request per pattern. JDI ANDs the filters on a request, so the
+            // patterns cannot share one: with a single package that went unnoticed,
+            // and the moment there were six -- one per directory under the source
+            // roots -- every class had to match all six and no method entry event
+            // was ever generated. Measured as a step into that produced nothing at
+            // all, anywhere, not only in a GSP.
             for (String pattern : packages) {
+                MethodEntryRequest entry = vm.eventRequestManager().createMethodEntryRequest();
+                entry.addThreadFilter(thread);
                 entry.addClassFilter(pattern);
+                entry.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+                entry.enable();
+                assistFor(thread).add(entry);
             }
-            entry.setSuspendPolicy(EventRequest.SUSPEND_ALL);
-            entry.enable();
-            assistFor(thread).add(entry);
             return true;
         } catch (Exception e) {
             clearStepAssist(thread);
             return false;
         }
+    }
+
+    /** The page class of the frame this thread is stopped in, or null. */
+    private String currentGspClass(ThreadReference thread) {
+        try {
+            Location at = thread.frame(0).location();
+            Path file = sources.find(at);
+            if (file != null && GspSource.isGsp(file.toString())) {
+                return GspSource.pageClassNameOf(at.declaringType().name());
+            }
+        } catch (Exception e) {
+            // not stopped anywhere useful; no filter to add
+        }
+        return null;
     }
 
     /**

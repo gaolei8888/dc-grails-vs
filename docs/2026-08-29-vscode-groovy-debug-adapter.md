@@ -1003,6 +1003,58 @@ GSP 第 4 行                   → run:23 → closure2:25                      
   `packageFilters()` 会多出 `spike.*`、`errors.*` 这类由视图目录名生成的过滤器 —— 匹配不到东西,
   无害。
 
+### 7.11 GSP 单步、一个潜伏的 stepIn 缺陷、以及预编译的真相(2026-09-06)
+
+#### stepIn 一直是坏的,只是没被触发
+
+量 GSP 单步时,`stepIn` 一个事件都不产生。原因不在 GSP:
+
+> **JDI 一个请求上的多个 class filter 是「与」,不是「或」。**
+
+`armStepInto` 把 `packageFilters()` 的每一条都加到同一个 `MethodEntryRequest` 上。此前只有
+`dapspike.*` 一条,所以能用;把 `grails-app/views` 加进源根后变成六条(视图目录名生成的
+`spike.*`、`errors.*`……),六条相与 —— **任何类都不可能同时属于六个包,于是一个事件都不产生**。
+
+这不是 GSP 才有的问题:**任何有两个顶层包的项目**(`com` 与 `org`、多模块、生成源码目录)
+在 0.1.11 起就已经踩上了,只是那一个靶子恰好只有一个包,所以从没露出来。
+改成**一条 pattern 一个请求**。回归后 `controller:9 → 20 → 21 → 22 → closure5:23`,与 §7.6 一致。
+
+#### step over 在 GSP 里会原地不动
+
+`armLineStepAt` 排除「当前行」时比的是**生成行**。一个页面行对应多个生成行,所以从页面第 4 行
+step over 落到第 9 行(生成行 37),再按一次落到生成行 38 —— **还是页面第 9 行,高亮不动**。
+改成比**用户看到的行**(和 §7.10 给去重器做的改动同源)。改后:第 4 行 → 第 9 行,一次。
+
+#### stepIn 进 GSP 的标签体
+
+页面类在**默认包**里,名字是路径,任何由目录名生成的包过滤器都匹配不到它。所以 stepIn 时若当前帧
+是 GSP,额外加一条 `<页面类>*` 的过滤器。实测从第 9 行(`invokeTag('captureBody',…)`)
+stepIn:
+
+```
+run:9 → closure2.doCall:4 → closure2$_closure4.doCall:4 → closure2.doCall:5
+```
+
+#### 预编译 GSP:Grails 7 根本不做
+
+原计划支持它。先量了三件事,结论是**这个前提在 Grails 7.2.3 上不成立**:
+
+1. 项目里**没有 `compileGsp` 任务**(`gradlew tasks --all` 只有 `war` / `bootWar` / `assemble`)。
+2. 打出来的 war 里是 **`WEB-INF/classes/spike/page.gsp` —— 页面源码**,没有 `gsp_*.class`,
+   也没有 `_linenumbers.data`。
+3. `GroovyPageMetaInfo` 里的 `precompiledMode` / `readLineNumbers()`(读
+   `_linenumbers.data`,格式是 `readInt` 长度 + 若干 `readInt`)是历史遗留,这个版本的构建
+   从不生成那些文件。
+
+所以 war 里也是**运行时编译**,和开发模式同一条路,§7.10 的实现原样适用 —— 没有第二条路要写。
+
+**但旁边有个真缺口**:war 里页面的绝对路径是 `WEB-INF/classes/spike/page.gsp`,与编辑器里
+`grails-app/views/spike/page.gsp` 不同,**推出来的类名对不上**,断点绑不上。实测确认:对 war
+下断点只停在「尚未编译」。要修得靠「按路径尾部匹配」,但**本靶子验不了** —— rest-api 骨架
+加装 GSP 后 `war` 没把视图打到解析器找的位置,渲染直接
+`Could not resolve view with name '/spike/page'`。那是靶子的打包问题,与适配器无关;在能渲染的
+war 上复验之前不写这段代码。
+
 ### T2 — 好用(再 2~4 周)
 
 - **条件断点** —— 需在目标 VM 内求值 Groovy 表达式。最省事的路子是把表达式编成闭包后在目标 VM 里 `invokeMethod`。**这是最大的一块。**
