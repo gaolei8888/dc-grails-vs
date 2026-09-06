@@ -1,5 +1,33 @@
 # Change Log
 
+## 0.1.14 — pre-release
+
+### Added
+
+- **Breakpoints bind in `.gsp` files.** A page line stops on the right line, the
+  call stack shows the `.gsp` and the page's own line numbers, and the Grails
+  scope and variables work there as anywhere else.
+- There is no SMAP behind this. A GSP compiles to a class named after the page's
+  path with every non-alphanumeric character turned into an underscore, reporting
+  no source file and no second stratum, and the only mapping that exists at
+  runtime is an `int[]` field on `GroovyPageMetaInfo`, indexed by generated line
+  and valued by page line. It is read as a field, so nothing runs in the
+  application to place a breakpoint.
+- **A page line stops once**, not two or three times. One line of markup becomes
+  several generated statements across several classes — `${item * 2}` is a call
+  and a closure on one generated line, in two classes — so the breakpoint goes on
+  the outermost class that owns any of them, at the first line it owns.
+- A GSP line that generates nothing, a closing tag or blank markup, says so on
+  the breakpoint once the page has been compiled. Before that it says the page
+  has not been compiled yet, which is the only true answer: a GSP is compiled the
+  first time it renders.
+
+### Note
+
+- **Precompiled GSPs are not supported.** A production build compiles pages ahead
+  of time and keeps their line numbers in a resource file rather than in memory;
+  this reads the in-memory matrix, which is what a development run has.
+
 ## 0.1.13 — pre-release
 
 ### Fixed

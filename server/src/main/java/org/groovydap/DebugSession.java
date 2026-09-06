@@ -34,6 +34,7 @@ import org.groovydap.dap.DapTransport;
 import org.groovydap.jdi.BreakpointBinder;
 import org.groovydap.jdi.Condition;
 import org.groovydap.jdi.GrailsWebScope;
+import org.groovydap.jdi.GspSource;
 import org.groovydap.jdi.PathEvaluator;
 import org.groovydap.jdi.SourceLocator;
 import org.groovydap.jdi.StopDeduper;
@@ -106,6 +107,9 @@ public final class DebugSession {
     private SourceLocator sources = new SourceLocator(null);
     private final StopDeduper deduper = new StopDeduper();
     private final Variables variables = new Variables();
+
+    /** Generated-line to page-line matrices, by page class name. */
+    private final Map<String, int[]> gspMatrices = new ConcurrentHashMap<>();
 
     private final Map<Long, Integer> threadIds = new ConcurrentHashMap<>();
     private final Map<Integer, ThreadReference> threadsById = new ConcurrentHashMap<>();
@@ -356,7 +360,7 @@ public final class DebugSession {
         // the depth; DAP hands it back verbatim in scopes.
         entry.put("id", frameId(thread, index));
         entry.put("name", location.declaringType().name() + "." + location.method().name());
-        entry.put("line", Math.max(location.lineNumber(), 0));
+        entry.put("line", displayLine(location));
         entry.put("column", 1);
 
         Path file = sources.find(location);
@@ -369,6 +373,48 @@ public final class DebugSession {
             entry.put("presentationHint", "subtle");
         }
         return entry;
+    }
+
+    /**
+     * The line to show for a frame: its own, unless it came from a GSP.
+     *
+     * <p>A GSP's classes carry the line numbers of the Groovy generated from the
+     * page, which are not the page's. Nothing else reports the difference -- the
+     * frame would land on line 30 of a nine line file -- so it is translated here
+     * through the page's line matrix. See {@link GspSource}.
+     */
+    private int displayLine(Location location) {
+        int line = location.lineNumber();
+        Path file = sources.find(location);
+        if (file == null || !GspSource.isGsp(file.toString())) {
+            return Math.max(line, 0);
+        }
+        int[] matrix = gspMatrixFor(location.declaringType());
+        if (matrix == null) {
+            return Math.max(line, 0);
+        }
+        int page = GspSource.gspLine(matrix, line);
+        return page > 0 ? page : Math.max(line, 0);
+    }
+
+    /** A page's line matrix, cached: reading one copies a thousand ints back. */
+    private int[] gspMatrixFor(com.sun.jdi.ReferenceType type) {
+        String pageClassName = GspSource.pageClassNameOf(type.name());
+        int[] known = gspMatrices.get(pageClassName);
+        if (known != null) {
+            return known;
+        }
+        for (com.sun.jdi.ReferenceType candidate : vm.classesByName(pageClassName)) {
+            int[] matrix = GspSource.lineNumbers(vm, candidate);
+            if (matrix != null) {
+                // Not cached until it is found: before the page has run there is
+                // no matrix to read, and caching that absence would keep every
+                // later frame in the page showing a generated line number.
+                gspMatrices.put(pageClassName, matrix);
+                return matrix;
+            }
+        }
+        return null;
     }
 
     private void onScopes(Map<String, Object> request) {
@@ -857,7 +903,7 @@ public final class DebugSession {
             depth = -1;
         }
         traceLocation("breakpoint", thread, event.location());
-        if (!deduper.shouldReport(thread, event.location(), depth)) {
+        if (!deduper.shouldReport(thread, event.location(), depth, displayLine(event.location()))) {
             // The other half of a line Groovy compiled twice; see StopDeduper.
             return null;
         }
@@ -1140,7 +1186,7 @@ public final class DebugSession {
         // Same rule as breakpoints: one stop per line. An exception on its way up
         // passes the same line more than once -- Groovy's dispatch rethrows -- and
         // reporting each pass says nothing the first did not.
-        if (!deduper.shouldReport(thread, where, depth)) {
+        if (!deduper.shouldReport(thread, where, depth, displayLine(where))) {
             return null;
         }
         lastException = event;

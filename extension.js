@@ -483,6 +483,9 @@ function defaultSourcePaths(workspaceFolder) {
   const candidates = [
     'grails-app/controllers', 'grails-app/services', 'grails-app/domain',
     'grails-app/init', 'grails-app/utils', 'grails-app/jobs', 'grails-app/taglib',
+    // views is where the GSPs are: a page's frames and breakpoints are only
+    // resolvable if the adapter is told to look there.
+    'grails-app/views',
     'src/main/groovy', 'src/main/java', 'src/test/groovy'
   ];
   return candidates

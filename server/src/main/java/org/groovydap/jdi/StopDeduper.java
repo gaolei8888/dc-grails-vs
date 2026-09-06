@@ -27,6 +27,12 @@ import java.util.Map;
  * lowest bci would arm the path that never runs, and the breakpoint would simply
  * never fire. So the duplicate is removed here instead, at the point of the stop.
  *
+ * <p>The line compared is the one the user sees, not the one in the class file.
+ * For a GSP they differ: one page line becomes several generated lines in the same
+ * method -- {@code ${item * 2\}} on page line 6 is generated lines 30 and 31 of the
+ * body closure -- which is the same duplicate, one level up, and is removed by the
+ * same rule.
+ *
  * <p>The rule: a stop is a duplicate when it repeats the previous stop's thread,
  * method, line and stack depth but at a <em>different</em> bytecode index, and
  * nothing was reported in between. A loop that calls the same method repeatedly
@@ -57,13 +63,14 @@ public final class StopDeduper {
      * @return true if this event should be reported to the client, false if it is
      *         the second half of a line already reported.
      */
-    public synchronized boolean shouldReport(ThreadReference thread, Location location, int depth) {
+    public synchronized boolean shouldReport(ThreadReference thread, Location location,
+                                            int depth, int line) {
         long id = thread.uniqueID();
         String method = location.declaringType().name() + "." + location.method().name();
         Stop previous = lastReported.get(id);
 
         if (previous != null
-                && previous.line == location.lineNumber()
+                && previous.line == line
                 && previous.depth == depth
                 && previous.method.equals(method)
                 && previous.codeIndex != location.codeIndex()) {
@@ -74,7 +81,7 @@ public final class StopDeduper {
             return false;
         }
 
-        lastReported.put(id, new Stop(method, location.lineNumber(), depth, location.codeIndex()));
+        lastReported.put(id, new Stop(method, line, depth, location.codeIndex()));
         return true;
     }
 

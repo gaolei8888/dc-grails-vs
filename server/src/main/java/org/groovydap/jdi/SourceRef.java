@@ -65,16 +65,22 @@ public final class SourceRef {
     private final String fileName;
     private final List<String> prefixes;
     private final List<String> lines;
+    private final boolean gsp;
 
-    private SourceRef(Path path, String fileName, List<String> prefixes, List<String> lines) {
+    private SourceRef(Path path, String fileName, List<String> prefixes, List<String> lines,
+                      boolean gsp) {
         this.path = path;
         this.fileName = fileName;
         this.prefixes = prefixes;
         this.lines = lines;
+        this.gsp = gsp;
     }
 
     public static SourceRef of(String pathText) throws IOException {
         Path path = Paths.get(pathText);
+        if (GspSource.isGsp(pathText)) {
+            return gspRef(path);
+        }
         String fileName = path.getFileName().toString();
         String raw = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
         List<String> lines = Arrays.asList(raw.split("\r?\n", -1));
@@ -97,7 +103,33 @@ public final class SourceRef {
         for (String name : names) {
             prefixes.add(pkg.isEmpty() ? name : pkg + "." + name);
         }
-        return new SourceRef(path, fileName, Collections.unmodifiableList(prefixes), lines);
+        return new SourceRef(path, fileName, Collections.unmodifiableList(prefixes), lines,
+                false);
+    }
+
+    /**
+     * A GSP, whose class name is its own path and whose {@code sourceName()} is
+     * that same string rather than a file name (design doc §7.9). Nothing has to
+     * be read out of the file to work either of them out -- which is just as well,
+     * since the page is markup and its class names are not in it.
+     */
+    private static SourceRef gspRef(Path path) throws IOException {
+        String className = GspSource.classNameFor(path);
+        List<String> lines;
+        try {
+            lines = Arrays.asList(
+                    new String(Files.readAllBytes(path), StandardCharsets.UTF_8)
+                            .split("\r?\n", -1));
+        } catch (IOException e) {
+            lines = Collections.emptyList();
+        }
+        return new SourceRef(path, className,
+                Collections.singletonList(className), lines, true);
+    }
+
+    /** Whether this file's lines have to be translated before they mean bytecode. */
+    public boolean isGsp() {
+        return gsp;
     }
 
     public Path path() {

@@ -926,6 +926,83 @@ PREPARED ..._page_gsp$_run_closure2$_closure4
 **结论:可以做,不需要 SMAP,但它是独立的一块**(路径→类名、metaInfo 查表、双向行号映射、
 预编译分支),不是在现有绑定器上改几行。
 
+### 7.10 GSP 断点实现(2026-09-06)
+
+§7.9 列的三件未定的事全部量掉了,两件和猜的不一样。
+
+#### 1. 下标是 0 基
+
+用 `grails.views.gsp.keepgenerateddir` 把生成的 Groovy 留在磁盘上,直接对照:
+
+```
+生成行 14  h(0)                                            ← GSP 第 1 行 <html>
+生成行 22  invokeTag('captureHead','grailsLayout',2,[:],1)  ← GSP 第 2 行
+生成行 26  expressionOut.print(evaluate('title', 4, it)…)   ← GSP 第 4 行
+生成行 30  expressionOut.print(evaluate('item * 2', 6, …))  ← GSP 第 6 行
+```
+
+矩阵是 `… 1(idx13) … 2(idx21) … 4(idx25) … 6(idx29) …`,即 **`lineNumbers[G-1]` 是生成行 G 的
+GSP 行**。生成行 14 与 22 两个点各自排除 1 基;其余的点两种解释都成立,靠它们分不出来。
+
+#### 2. prepare 时行号已就绪,但 `pageClass` 还是 null
+
+用 SUSPEND_ALL 的 `ClassPrepareRequest` 停在页面类 prepare 的那一刻:
+
+```
+### PREPARED …_page_gsp
+        at this prepare: 1 instance(s)
+          pageClass   = null
+          lineNumbers = int[1000] 1 1 … 2 2 … 3 4 4 4 4 5 5 6 6 7 7 8 8 9 9 9 1 1
+```
+
+metaInfo 先建好矩阵,再回填类。**所以「此刻唯一那个还没回填 pageClass 的 metaInfo,就是刚
+prepare 的这个类的」** —— 实现就按这条走,并且在有多个未回填时拒绝猜(闭包类稍后 prepare,
+那时 `pageClass` 已就位,是第二次机会)。实测第一次渲染就绑上了。
+
+#### 3. 一个页面行会停两到三次 —— 必须收敛到一次
+
+这是实现时才暴露的,§7.9 没预见。第一版把页面行映射到的**每个**生成行、在**每个**拥有它的类上
+全装,结果:
+
+```
+GSP 第 6 行(在 <g:each> 里)  → closure2:30 → closure6:30 → closure2:31   一次迭代停 3 次
+GSP 第 4 行                   → run:23 → closure2:25                      一次渲染停 2 次
+```
+
+第 6 行的两个来源是 `evaluate('item * 2', 6, it) { return item * 2 }` —— 一个调用加一个闭包,
+**同一生成行、两个类**;第 4 行则是同一页面行被摊到 `run` 和 body 闭包的**不同**生成行上。
+
+先试了「内层类的行若被外层类也拥有就跳过」,只解决第 6 行那种。最后换成一条更简单也更普适的:
+
+> **一个页面行只绑一处:拥有它任一生成行的最外层类(`$` 最少),取该类拥有的最小生成行。**
+> 后来出现的更优候选会替换先前的,所以不依赖类的 prepare 顺序;已经持有请求的类总是重新装,
+> 那是「同名类再次 prepare」,即 devtools 重启。
+
+外加把 `StopDeduper` 比较的行改成**用户看到的行**(GSP 是页面行)—— 同一方法内一个页面行对应
+多个生成行,正是 §7.2 ① 那个重复,高了一层。
+
+实测(10 行的页面,`<g:each>` 三次迭代,连打两次请求):
+
+| 断点 | 结果 |
+|---|---|
+| 第 4 行 `<h1>${title}</h1>` | 每次渲染停 **1** 次 |
+| 第 6 行(each 体内) | 每次渲染停 **3** 次,一次迭代一次 |
+| 第 10 行 `</html>` | 不绑定;编译后把 `message` 改成「produces no code」并发 `breakpoint changed` |
+| 栈帧 | `page.gsp` 的绝对路径 + **页面行号**(不是生成行 30/31) |
+| Locals / Grails scope | 正常(`out`、`expressionOut`、`params`…) |
+
+同一轮跑了 Groovy 侧回归:断点序列 `20 23 25 25 23 25`、step over 序列
+`20 21 22 28 29 index:10 index:11`,与之前逐条一致。
+
+#### 还差的
+
+- **预编译 GSP 不支持**。生产构建用 `compileGsp` 提前编译,行号在
+  `LINENUMBERS_DATA_POSTFIX` 那个资源文件里,不是内存里的数组;类名形态也不同。
+- **GSP 里的单步没量过**。断点验了;单步走的是生成行,一个页面行上可能停不止一次。
+- `grails-app/views` 现在是默认源根之一(否则页面既找不到也解析不出),副作用是
+  `packageFilters()` 会多出 `spike.*`、`errors.*` 这类由视图目录名生成的过滤器 —— 匹配不到东西,
+  无害。
+
 ### T2 — 好用(再 2~4 周)
 
 - **条件断点** —— 需在目标 VM 内求值 Groovy 表达式。最省事的路子是把表达式编成闭包后在目标 VM 里 `invokeMethod`。**这是最大的一块。**

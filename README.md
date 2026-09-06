@@ -84,6 +84,29 @@ configuration:
 }
 ```
 
+## Breakpoints in `.gsp` files
+
+Set one in the gutter of a GSP and it binds, stops on the page's own line, and
+shows the `.gsp` in the call stack. The Grails scope, the variables pane and
+conditions all work there.
+
+There is no SMAP behind this and no JSR-45: a GSP compiles into a class named
+after the page's path, reporting no source file and no second stratum. The only
+mapping that exists while the application runs is an array of line numbers held
+by Grails, read as a field — so nothing runs in your application to place a
+breakpoint.
+
+A page is compiled the first time it renders, so a breakpoint set before that
+stays hollow and says so; render the page once and it binds. A line that
+generates no code — a closing tag, blank markup — says that instead.
+
+One line of markup becomes several statements in several classes, and the
+breakpoint goes on the first of them, so a line stops once per pass rather than
+two or three times. A line inside a `<g:each>` stops once per iteration.
+
+**Precompiled GSPs are not supported.** A production build compiles pages ahead
+of time and keeps their line numbers in a file rather than in memory.
+
 ## Debugging tests
 
 **Grails: Debug Tests** runs `gradlew test --debug-jvm` and attaches to the test
@@ -232,7 +255,9 @@ that takes no locks — single-threaded. Reading a value never runs anything.
   Gradle wrapper and the adapter attaches to it.
 - A hover, a watch, a logpoint and a condition all read paths rather than
   evaluating expressions. `list.size()` is refused by name, with the reason.
-- GSP files are not mapped.
+- **Stepping inside a GSP is not measured.** Breakpoints are; stepping steps
+  through generated lines and may pause more than once on a line of markup.
+- Precompiled GSPs are not supported (see above).
 
 ## Star it
 

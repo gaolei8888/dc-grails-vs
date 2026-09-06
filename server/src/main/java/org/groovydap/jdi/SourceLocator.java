@@ -24,6 +24,8 @@ public final class SourceLocator {
 
     private final List<Path> roots = new ArrayList<>();
     private final Map<String, Path> cache = new HashMap<>();
+    /** Class name a GSP compiles into, to the GSP. Built on first use. */
+    private Map<String, Path> gspPages;
 
     public SourceLocator(List<String> configuredRoots) {
         if (configuredRoots != null) {
@@ -94,12 +96,14 @@ public final class SourceLocator {
             return cache.get(relative);
         }
 
-        Path found = null;
+        Path found = gspPages().get(relative.toLowerCase(java.util.Locale.ROOT));
         for (Path root : roots) {
+            if (found != null) {
+                break;
+            }
             Path candidate = root.resolve(relative);
             if (Files.isRegularFile(candidate)) {
                 found = candidate;
-                break;
             }
         }
         if (found == null) {
@@ -116,6 +120,35 @@ public final class SourceLocator {
         }
         cache.put(relative, found);
         return found;
+    }
+
+    /**
+     * The GSPs under the roots, indexed by the class name each compiles into.
+     *
+     * <p>A frame in a page reports {@code sourcePath()} as that class name -- the
+     * page's own path with every non-alphanumeric character turned into an
+     * underscore -- which resolves against no root and matches no file name, so
+     * the ordinary lookup cannot find it. Walking the views once and mangling each
+     * name the same way turns the lookup back into a map read.
+     */
+    private synchronized Map<String, Path> gspPages() {
+        if (gspPages != null) {
+            return gspPages;
+        }
+        gspPages = new HashMap<>();
+        for (Path root : roots) {
+            try (java.util.stream.Stream<Path> walk = Files.walk(root, 12)) {
+                walk.filter(Files::isRegularFile)
+                    .filter(file -> file.getFileName().toString()
+                            .toLowerCase(java.util.Locale.ROOT).endsWith(".gsp"))
+                    .forEach(file -> gspPages.put(
+                            GspSource.classNameFor(file).toLowerCase(java.util.Locale.ROOT),
+                            file));
+            } catch (Exception e) {
+                // an unreadable root indexes nothing; not an error
+            }
+        }
+        return gspPages;
     }
 
     private Path findByName(Path root, String fileName) {
