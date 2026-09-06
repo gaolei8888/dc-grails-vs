@@ -61,13 +61,50 @@ public final class GspSource {
      * as "everything that is not a letter or a digit".
      */
     public static String classNameFor(Path path) {
-        String absolute = path.toAbsolutePath().toString();
-        StringBuilder name = new StringBuilder(absolute.length());
-        for (int i = 0; i < absolute.length(); i++) {
-            char c = absolute.charAt(i);
-            name.append(Character.isLetterOrDigit(c) ? c : '_');
+        return mangle(path.toAbsolutePath().toString());
+    }
+
+    /**
+     * The part of a page's class name that does not depend on where it is running.
+     *
+     * <p>The class is named after the page's path, so the same page has a
+     * different name in a deployment than in the sources. Measured on the same
+     * ten line page:
+     *
+     * <pre>
+     *   from the sources  C__Users_..._grails_app_views_spike_page_gsp
+     *   from a war        ServletContext_resource___WEB_INF_grails_app_views_spike_page_gsp_
+     * </pre>
+     *
+     * <p>What both contain is the path below {@code views}, mangled the same way:
+     * {@code _spike_page_gsp}. A breakpoint set on the file in the editor finds
+     * the class the running application compiled by looking for that.
+     *
+     * @return the marker, or null if the page is not under a directory called
+     *     views, in which case there is nothing dependable to match on
+     */
+    public static String relativeMarker(Path path) {
+        Path absolute = path.toAbsolutePath();
+        for (Path parent = absolute.getParent(); parent != null; parent = parent.getParent()) {
+            Path name = parent.getFileName();
+            if (name != null && name.toString().equalsIgnoreCase("views")) {
+                StringBuilder marker = new StringBuilder();
+                for (Path segment : parent.relativize(absolute)) {
+                    marker.append('_').append(mangle(segment.toString()));
+                }
+                return marker.toString();
+            }
         }
-        return name.toString();
+        return null;
+    }
+
+    private static String mangle(String text) {
+        StringBuilder out = new StringBuilder(text.length());
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            out.append(Character.isLetterOrDigit(c) ? c : '_');
+        }
+        return out.toString();
     }
 
     /** The page class of any class from a GSP, closures included. */

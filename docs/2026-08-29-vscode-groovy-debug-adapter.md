@@ -1055,6 +1055,53 @@ run:9 → closure2.doCall:4 → closure2$_closure4.doCall:4 → closure2.doCall:
 `Could not resolve view with name '/spike/page'`。那是靶子的打包问题,与适配器无关;在能渲染的
 war 上复验之前不写这段代码。
 
+### 7.12 war 里的 GSP 断点(2026-09-06)
+
+§7.11 留下的缺口:页面类名来自路径,部署之后路径变了,类名就对不上。实测两边:
+
+```
+从源码跑   C__Users_gaole_..._dapspike_grails_app_views_spike_page_gsp
+从 war 跑  ServletContext_resource___WEB_INF_grails_app_views_spike_page_gsp_
+```
+
+**行号矩阵一模一样** —— 同一个页面同一套映射,变的只有名字。两个名字都包含
+`_spike_page_gsp`,即 **`views` 以下那段路径**,按它匹配即可。要求**恰好一个**页面命中,
+命中多个就不绑(两个应用在同一个 JVM 里提供同名视图路径的情形),不猜。
+
+改动比想象中多一处:`install()` 里还有一道 `sourceName()` **必须完全相等**的检查,而 GSP 的
+`sourceName()` 就是它的类名 —— 类名放宽了、这道没放宽,结果是「找到了却又被拒掉」。
+两处都要放宽才通。
+
+`ClassPrepareRequest` 的过滤器不能表达「包含」(JDI 只允许一端一个 `*`),所以用
+`*_gsp` 与 `*_gsp_` 两条抓页面类本身(war 的资源路径在扩展名后还多一个字符),**闭包类等页面类
+prepare 之后再补一条 `<真实类名>$*`** —— 那时名字已知,而闭包要等页面第一次执行才加载,来得及。
+
+#### 让靶子能验这件事
+
+rest-api 骨架加装 GSP 后,`war` 不把 `grails-app/views` 打到视图解析器找的位置,渲染直接
+`Could not resolve view with name '/spike/page'`。在 `build.gradle` 里加
+
+```groovy
+tasks.withType(War).configureEach {
+    from('grails-app/views') { into 'WEB-INF/grails-app/views' }
+}
+```
+
+之后 war 渲染正常(359 字节,与 bootRun 一致)。**这是靶子的打包问题,不是适配器的** ——
+真实的 web profile 应用不需要这一步。
+
+实测(`warcase.sh`,断点下在**编辑器里那份** `page.gsp` 第 6 行):
+
+| 验的东西 | 结果 |
+|---|---|
+| 绑定 | 通过 —— `page.gsp:6 -> …_page_gsp_$_run_closure2.doCall (bci 87)` |
+| 停顿次数 | 3 次,一次 `<g:each>` 迭代一次 |
+| 栈帧 | 回映射到**本地**的 `page.gsp`,页面第 6 行 |
+| Locals | `item = 1`,Grails scope 正常 |
+
+同一轮回归:源码模式的 GSP(第 4 行 1 次、第 6 行 3 次、第 10 行不绑)、Groovy 断点
+`20 23 25 25 23 25`、Groovy step into `9 → 20 → 21 → 22 → 23`,全部与之前一致。
+
 ### T2 — 好用(再 2~4 周)
 
 - **条件断点** —— 需在目标 VM 内求值 Groovy 表达式。最省事的路子是把表达式编成闭包后在目标 VM 里 `invokeMethod`。**这是最大的一块。**

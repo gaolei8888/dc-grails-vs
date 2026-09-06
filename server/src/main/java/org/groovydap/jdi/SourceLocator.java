@@ -26,6 +26,8 @@ public final class SourceLocator {
     private final Map<String, Path> cache = new HashMap<>();
     /** Class name a GSP compiles into, to the GSP. Built on first use. */
     private Map<String, Path> gspPages;
+    /** The same pages by the part of the name a deployment does not change. */
+    private final Map<String, Path> gspMarkers = new HashMap<>();
 
     public SourceLocator(List<String> configuredRoots) {
         if (configuredRoots != null) {
@@ -96,7 +98,7 @@ public final class SourceLocator {
             return cache.get(relative);
         }
 
-        Path found = gspPages().get(relative.toLowerCase(java.util.Locale.ROOT));
+        Path found = findGsp(relative);
         for (Path root : roots) {
             if (found != null) {
                 break;
@@ -131,6 +133,33 @@ public final class SourceLocator {
      * the ordinary lookup cannot find it. Walking the views once and mangling each
      * name the same way turns the lookup back into a map read.
      */
+    /**
+     * The GSP a frame came from, by class name.
+     *
+     * <p>Exactly first, then by the part of the name that does not change with
+     * where the application runs: a page compiled from a war is named
+     * ServletContext_resource___WEB_INF_grails_app_views_spike_page_gsp_ where the
+     * same page from the sources is C__Users_..._views_spike_page_gsp. Only an
+     * unambiguous match counts -- two pages that end the same way name neither.
+     */
+    private synchronized Path findGsp(String className) {
+        Map<String, Path> pages = gspPages();
+        Path exact = pages.get(className.toLowerCase(java.util.Locale.ROOT));
+        if (exact != null) {
+            return exact;
+        }
+        Path single = null;
+        for (Map.Entry<String, Path> page : gspMarkers.entrySet()) {
+            if (className.toLowerCase(java.util.Locale.ROOT).contains(page.getKey())) {
+                if (single != null) {
+                    return null;
+                }
+                single = page.getValue();
+            }
+        }
+        return single;
+    }
+
     private synchronized Map<String, Path> gspPages() {
         if (gspPages != null) {
             return gspPages;
@@ -141,9 +170,14 @@ public final class SourceLocator {
                 walk.filter(Files::isRegularFile)
                     .filter(file -> file.getFileName().toString()
                             .toLowerCase(java.util.Locale.ROOT).endsWith(".gsp"))
-                    .forEach(file -> gspPages.put(
-                            GspSource.classNameFor(file).toLowerCase(java.util.Locale.ROOT),
-                            file));
+                    .forEach(file -> {
+                        gspPages.put(GspSource.classNameFor(file)
+                                .toLowerCase(java.util.Locale.ROOT), file);
+                        String marker = GspSource.relativeMarker(file);
+                        if (marker != null) {
+                            gspMarkers.put(marker.toLowerCase(java.util.Locale.ROOT), file);
+                        }
+                    });
             } catch (Exception e) {
                 // an unreadable root indexes nothing; not an error
             }

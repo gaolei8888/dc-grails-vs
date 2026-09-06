@@ -66,14 +66,17 @@ public final class SourceRef {
     private final List<String> prefixes;
     private final List<String> lines;
     private final boolean gsp;
+    /** For a GSP: the part of the class name that survives being deployed. */
+    private final String marker;
 
     private SourceRef(Path path, String fileName, List<String> prefixes, List<String> lines,
-                      boolean gsp) {
+                      boolean gsp, String marker) {
         this.path = path;
         this.fileName = fileName;
         this.prefixes = prefixes;
         this.lines = lines;
         this.gsp = gsp;
+        this.marker = marker;
     }
 
     public static SourceRef of(String pathText) throws IOException {
@@ -104,7 +107,7 @@ public final class SourceRef {
             prefixes.add(pkg.isEmpty() ? name : pkg + "." + name);
         }
         return new SourceRef(path, fileName, Collections.unmodifiableList(prefixes), lines,
-                false);
+                false, null);
     }
 
     /**
@@ -124,7 +127,18 @@ public final class SourceRef {
             lines = Collections.emptyList();
         }
         return new SourceRef(path, className,
-                Collections.singletonList(className), lines, true);
+                Collections.singletonList(className), lines, true,
+                GspSource.relativeMarker(path));
+    }
+
+    /**
+     * Whether a class from a GSP running somewhere else is this page.
+     *
+     * <p>Deliberately not offered for Groovy: a class name there is the package
+     * and the type, which does not change with where the application runs.
+     */
+    public boolean isGspMarker(String className) {
+        return marker != null && className.contains(marker);
     }
 
     /** Whether this file's lines have to be translated before they mean bytecode. */
@@ -148,9 +162,19 @@ public final class SourceRef {
 
     /** Filters for {@code ClassPrepareRequest}: each type and its synthetics. */
     public List<String> classPrepareFilters() {
-        List<String> filters = new ArrayList<>(prefixes.size());
+        List<String> filters = new ArrayList<>(prefixes.size() + 2);
         for (String prefix : prefixes) {
             filters.add(prefix + "*");
+        }
+        if (gsp && marker != null) {
+            // JDI allows one wildcard, at one end, so "contains" cannot be a
+            // filter. A page class ends in the mangled .gsp extension -- "_gsp"
+            // from the sources, "_gsp_" from a war, whose resource path has one
+            // more character after it -- and mayOwn() sorts out which of them is
+            // this page. Its closures are picked up once it is known: see
+            // BreakpointBinder.watchClosuresOf.
+            filters.add("*_gsp");
+            filters.add("*_gsp_");
         }
         return filters;
     }
@@ -168,7 +192,7 @@ public final class SourceRef {
                 return true;
             }
         }
-        return false;
+        return isGspMarker(className);
     }
 
     /** 1-based; empty string past the end of the file. */

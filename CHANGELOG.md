@@ -1,5 +1,18 @@
 # Change Log
 
+## 0.1.16 — pre-release
+
+### Added
+
+- **A GSP breakpoint binds against an application running from a war**, not only
+  one running from the sources you have open. A page's class is named after its
+  path, so the same page is a different class in a deployment —
+  `ServletContext_resource___WEB_INF_grails_app_views_spike_page_gsp_` where the
+  sources give `C__Users_..._views_spike_page_gsp` — and the breakpoint used to
+  stay hollow. What both names contain is the path below `views`, and that is
+  what is matched on now, requiring exactly one page to match so nothing is
+  guessed. Call stacks resolve back to your copy of the file the same way.
+
 ## 0.1.15 — pre-release
 
 ### Fixed

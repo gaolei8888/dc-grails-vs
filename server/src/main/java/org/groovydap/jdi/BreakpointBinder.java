@@ -137,6 +137,8 @@ public final class BreakpointBinder {
         final List<ClassPrepareRequest> classPrepareRequests = new ArrayList<>();
         /** A GSP's generated-line to page-line matrix, once it can be read. */
         int[] lineMatrix;
+        /** Page classes whose closures are already being watched. */
+        final java.util.Set<String> watchedClosuresOf = new java.util.HashSet<>();
 
         SourceState(SourceRef ref) {
             this.ref = ref;
@@ -244,8 +246,36 @@ public final class BreakpointBinder {
         String name = type.name();
         for (SourceState state : bySource.values()) {
             if (state.ref.mayOwn(name)) {
+                watchClosuresOf(state, name);
                 install(state, type);
             }
+        }
+    }
+
+    /**
+     * Watches the closures of a page class that was found by its marker.
+     *
+     * <p>A page running from its sources is caught by a filter built from its own
+     * name, which covers its closures too. One running from a war has a different
+     * name and is found by the part of it that does not change -- but a JDI filter
+     * cannot express "contains", so the closures are not covered by it. Once the
+     * page class itself has prepared its name is known, and one more filter picks
+     * them up. That is early enough: a closure prepares when the page first runs,
+     * after the class that declares it.
+     */
+    private void watchClosuresOf(SourceState state, String className) {
+        if (!state.ref.isGsp() || className.indexOf('$') >= 0
+                || !state.watchedClosuresOf.add(className)) {
+            return;
+        }
+        try {
+            ClassPrepareRequest request = erm.createClassPrepareRequest();
+            request.addClassFilter(className + "$*");
+            request.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+            request.enable();
+            state.classPrepareRequests.add(request);
+        } catch (RuntimeException e) {
+            log.accept("could not watch the closures of " + className + ": " + e);
         }
     }
 
@@ -299,7 +329,12 @@ public final class BreakpointBinder {
             // attribute at all. Nothing to bind; not an error.
             return;
         }
-        if (!state.ref.fileName().equals(sourceName)) {
+        // A GSP reports its class name as its source name, and that name depends
+        // on where the application is running from -- so the same tolerance the
+        // class name gets has to apply here, or a page compiled inside a war is
+        // rejected after having been correctly identified.
+        if (!state.ref.fileName().equals(sourceName)
+                && !state.ref.isGspMarker(sourceName)) {
             return;
         }
 
@@ -380,8 +415,10 @@ public final class BreakpointBinder {
             request.enable();
             installed.add(request);
             owners.put(request, bp);
+            // The file name, not ref.fileName(): for a GSP the latter is the
+            // mangled class name, which is a mouthful and not what the user typed.
             log.accept(String.format("bound %s:%d -> %s.%s (bci %d)",
-                    state.ref.fileName(), line, type.name(),
+                    state.ref.path().getFileName(), line, type.name(),
                     location.method().name(), location.codeIndex()));
         }
         bp.verified = true;

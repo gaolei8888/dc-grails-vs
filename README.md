@@ -108,9 +108,11 @@ Stepping works inside a page: step over moves a line of markup at a time, and
 step into enters a tag body.
 
 Grails 7 compiles pages at runtime, in a packaged war as much as in a
-development run, so there is no precompiled case to handle — but a page compiled
-from inside a war has a different path, and a breakpoint set on your copy of it
-will not bind against a deployed application.
+development run, so there is no precompiled case to handle. A page compiled from
+inside a war is a differently named class, because the name comes from the path;
+the part below `views` is the same either way and that is what a breakpoint
+matches on, so debugging a deployed application works from your copy of the
+file.
 
 ## Debugging tests
 
@@ -260,10 +262,8 @@ that takes no locks — single-threaded. Reading a value never runs anything.
   Gradle wrapper and the adapter attaches to it.
 - A hover, a watch, a logpoint and a condition all read paths rather than
   evaluating expressions. `list.size()` is refused by name, with the reason.
-- **A GSP is found by its path**, so a breakpoint binds against an application
-  running from the sources you have open. An application running from a packaged
-  war compiles the same page from a different absolute path, and the breakpoint
-  will not bind against it.
+- Two different applications serving the same view path in one JVM would make a
+  GSP breakpoint ambiguous; it binds to neither rather than guessing.
 
 ## Star it
 
