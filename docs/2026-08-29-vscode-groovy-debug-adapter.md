@@ -860,6 +860,72 @@ logpoint、条件四处都要做这两件事,各留一份装箱类型表迟早�
 | `seed = abc` | 拒绝,「is not a whole number」 |
 | Grails scope 的 `params = 1` | 拒绝,JDI 的类型错误原样带出 |
 
+### 7.9 GSP 断点 spike(2026-09-05)—— 可行,但不是靠 SMAP
+
+**前提是错的。** 一直以为 GSP 断点需要 JSR-45 / SMAP,实测:生成的页面类
+`availableStrata()` 只有 `[Java]`,**没有第二个 stratum**。JDI 的 JSR-45 支持在这里一点用没有。
+
+GSP 编译器确实生成了行号映射,但放在 `___LineNumberPlaceholder` 类的 `@LineNumber` 注解里
+(`GroovyPageParser.addLineNumbers()`),而 **JDI 完全没有读注解的 API**。这条路也堵死。
+
+#### 三次猜错,最后靠 ClassPrepare 问出来
+
+1. 猜类名含 `gsp_` —— 扫不到。
+2. 猜有类的 `sourceName()` 以 `.gsp` 结尾 —— 一个都没有。
+3. 猜 `GroovyPageMetaInfo` 没被加载(第一次扫的时候确实报「not loaded」)。
+
+改成挂一个无过滤的 `ClassPrepareRequest`,把渲染期间准备的每个类名打出来,答案立刻出现:
+
+```
+PREPARED C__Users_gaole_..._dapspike_grails_app_views_spike_page_gsp
+         source=C__Users_gaole_..._dapspike_grails_app_views_spike_page_gsp
+PREPARED ..._page_gsp$_run_closure1
+PREPARED ..._page_gsp$_run_closure2$_closure4
+```
+
+**类名就是 .gsp 的绝对路径,把 `:` `/` `\` `.` 全换成下划线**,而 `sourceName()` 返回的是同一个
+字符串 —— 不是文件名,更不是 `.gsp`。前两次扫描因此必然扫不到。闭包类照例同名同源。
+
+#### 映射在哪里
+
+`org.grails.gsp.GroovyPageMetaInfo` 有一个活实例,两个**普通字段**:
+
+- `Class<?> pageClass` —— 生成的页面类
+- `int[] lineNumbers` —— 长度固定 1000,**下标是生成行,值是 GSP 行**
+
+靶子的 10 行 GSP 实测拿到:
+
+```
+22->3  23->4  24->4  25->4  26->4  27->5  28->5  29->6  30->6
+31->7  32->7  33->8  34->8  35->9  36->9  37->9   (38 起回落到 1,再往后全是 0)
+```
+
+对照源码,第 6 行是 `<p>doubled: ${item * 2}</p>`,映射到生成行 29 / 30。**两个字段都是直接读,
+不需要跑代码**,和现在的读取侧规则一致。
+
+#### 所以实现路径是
+
+1. `.gsp` 路径 → 类名:路径里的 `:` `/` `\` `.` 换成 `_`(不需要查任何注册表)。
+2. 类加载后,从 `GroovyPageMetaInfo` 的活实例里按 `pageClass.name()` 找到对应的 `lineNumbers`。
+3. GSP 第 N 行 → 所有满足 `lineNumbers[G] == N` 的生成行 G → 对该类及其闭包类
+   `locationsOfLine(G)` —— **§4 的算法原样复用**,只是多一层查表。
+4. 栈帧回映射反过来查:生成行 → `lineNumbers[G]` → GSP 行,`sourceName()` 反解出路径。
+
+#### 未定的几件事(真做的时候要先量)
+
+- **下标是 0 基还是 1 基**没有确认。上面的数据两种解释都说得通,差一行就全错。
+- **页面类要到第一次渲染才编译**,所以打开编辑器就下的断点必然先是空心的,要靠
+  `ClassPrepareRequest` 补装 —— 和闭包那条路一样,但**还要等 `lineNumbers` 填好**,
+  它是不是在 prepare 时就已经就绪没有验。
+- **预编译的 GSP(生产用 `compileGsp`)是另一条路**:类名形态不同,行号来自
+  `LINENUMBERS_DATA_POSTFIX` 那个资源文件而不是内存里的数组。本次只验了开发模式。
+- 靶子是 `rest-api` profile,GSP 是**额外加进去的**(`org.apache.grails:grails-gsp`),
+  并且生成的 REST 映射会把 `/spike/page` 送去 `show(id: 'page')`,所以加了一条
+  `get "/gsppage"` 专用映射。真实的 web profile 应用不需要这一步。
+
+**结论:可以做,不需要 SMAP,但它是独立的一块**(路径→类名、metaInfo 查表、双向行号映射、
+预编译分支),不是在现有绑定器上改几行。
+
 ### T2 — 好用(再 2~4 周)
 
 - **条件断点** —— 需在目标 VM 内求值 Groovy 表达式。最省事的路子是把表达式编成闭包后在目标 VM 里 `invokeMethod`。**这是最大的一块。**
