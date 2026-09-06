@@ -124,9 +124,17 @@ public final class DebugSession {
     private final Map<Long, Integer> stepDepths = new ConcurrentHashMap<>();
     private final Map<Long, Integer> stepOriginFrames = new ConcurrentHashMap<>();
     private final Map<Long, Integer> restepBudget = new ConcurrentHashMap<>();
-    /** Requests standing in for a step over that JDI cannot do from here. */
-    private final Set<EventRequest> stepAssist = ConcurrentHashMap.newKeySet();
-    private volatile int assistOriginFrames;
+    /**
+      * Requests standing in for the steps JDI cannot do here, per thread.
+      *
+      * <p>Per thread because every one of them is thread-filtered and a step is
+      * always a step of one thread. Held in one set, arming a step on a second
+      * stopped thread deleted the first thread's requests and overwrote the frame
+      * depth it was measured against -- and with allThreadsStopped, having two
+      * threads stopped and stepping either of them is ordinary.
+      */
+    private final Map<Long, Set<EventRequest>> stepAssist = new ConcurrentHashMap<>();
+    private final Map<Long, Integer> assistOriginFrames = new ConcurrentHashMap<>();
 
     public DebugSession(InputStream in, OutputStream out) {
         this.transport = new DapTransport(in, out);
@@ -462,7 +470,7 @@ public final class DebugSession {
     }
 
     private void onContinue(Map<String, Object> request) {
-        clearStepAssist(); // a continue abandons any step in progress
+        clearAllStepAssist(); // a continue resumes every thread, so no step survives
         Map<String, Object> args = arguments(request);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("allThreadsContinued", Boolean.TRUE);
@@ -530,7 +538,7 @@ public final class DebugSession {
         try {
             return armLineStepAt(thread, thread.frame(0).location(), frameCountOf(thread));
         } catch (Exception e) {
-            clearStepAssist();
+            clearStepAssist(thread);
             return false;
         }
     }
@@ -541,8 +549,9 @@ public final class DebugSession {
             if (lines.isEmpty()) {
                 return false;
             }
-            clearStepAssist();
-            assistOriginFrames = originFrames;
+            clearStepAssist(thread);
+            assistOriginFrames.put(thread.uniqueID(), originFrames);
+            Set<EventRequest> armed = assistFor(thread);
             EventRequestManager erm = vm.eventRequestManager();
 
             // Every location of every other line, not the first of each. Groovy
@@ -562,7 +571,7 @@ public final class DebugSession {
                 at.addThreadFilter(thread);
                 at.setSuspendPolicy(EventRequest.SUSPEND_ALL);
                 at.enable();
-                stepAssist.add(at);
+                armed.add(at);
             }
 
             MethodExitRequest exit = erm.createMethodExitRequest();
@@ -570,10 +579,10 @@ public final class DebugSession {
             exit.addClassFilter(here.declaringType());
             exit.setSuspendPolicy(EventRequest.SUSPEND_ALL);
             exit.enable();
-            stepAssist.add(exit);
-            return !stepAssist.isEmpty();
+            armed.add(exit);
+            return !armed.isEmpty();
         } catch (Exception e) {
-            clearStepAssist();
+            clearStepAssist(thread);
             return false;
         }
     }
@@ -615,10 +624,10 @@ public final class DebugSession {
             }
             entry.setSuspendPolicy(EventRequest.SUSPEND_ALL);
             entry.enable();
-            stepAssist.add(entry);
+            assistFor(thread).add(entry);
             return true;
         } catch (Exception e) {
-            clearStepAssist();
+            clearStepAssist(thread);
             return false;
         }
     }
@@ -631,34 +640,62 @@ public final class DebugSession {
      * and stays armed, so the next entry is still considered.
      */
     private Runnable onAssistEntry(MethodEntryEvent event) {
-        if (!stepAssist.contains(event.request())) {
+        ThreadReference thread = event.thread();
+        if (!isAssist(thread, event.request())) {
             return null;
         }
         Location at = event.location();
         if (at.lineNumber() < 0 || isOutsideProject(at)) {
             return null; // a wrapper, or a class that only looks like the project's
         }
-        ThreadReference thread = event.thread();
-        clearStepAssist();
+        clearStepAssist(thread);
         stoppedThread = thread;
         variables.reset();
         deduper.forget(thread);
         return () -> sendStopped("step", thread, new ArrayList<>());
     }
 
-    private void clearStepAssist() {
-        if (stepAssist.isEmpty()) {
+    private Set<EventRequest> assistFor(ThreadReference thread) {
+        return stepAssist.computeIfAbsent(thread.uniqueID(),
+                key -> ConcurrentHashMap.newKeySet());
+    }
+
+    /**
+     * Whether this request is one armed for this thread's step.
+     *
+     * <p>The thread is enough to find the owner: every request armed here carries
+     * a thread filter, so no other thread can produce an event for one.
+     */
+    private boolean isAssist(ThreadReference thread, EventRequest request) {
+        Set<EventRequest> armed = stepAssist.get(thread.uniqueID());
+        return armed != null && armed.contains(request);
+    }
+
+    private void clearStepAssist(ThreadReference thread) {
+        assistOriginFrames.remove(thread.uniqueID());
+        delete(stepAssist.remove(thread.uniqueID()));
+    }
+
+    /** Everything armed, for a continue: it resumes every thread, not just one. */
+    private void clearAllStepAssist() {
+        assistOriginFrames.clear();
+        for (Long id : new ArrayList<>(stepAssist.keySet())) {
+            delete(stepAssist.remove(id));
+        }
+    }
+
+    private void delete(Set<EventRequest> requests) {
+        if (requests == null || requests.isEmpty()) {
             return;
         }
         EventRequestManager erm = vm.eventRequestManager();
-        for (EventRequest request : stepAssist) {
+        for (EventRequest request : requests) {
             try {
                 erm.deleteEventRequest(request);
             } catch (RuntimeException e) {
                 // the VM may be gone, or the class unloaded with it
             }
         }
-        stepAssist.clear();
     }
 
     private void requestStep(ThreadReference thread, int depth) {
@@ -774,9 +811,10 @@ public final class DebugSession {
                     if (!sawBreakpoint) {
                         sawBreakpoint = true;
                         BreakpointEvent hit = (BreakpointEvent) event;
-                        announce = orFirst(announce, stepAssist.contains(hit.request())
-                                ? onAssistArrival(hit.thread())
-                                : onBreakpointHit(hit));
+                        announce = orFirst(announce,
+                                isAssist(hit.thread(), hit.request())
+                                        ? onAssistArrival(hit.thread())
+                                        : onBreakpointHit(hit));
                     }
                 } else if (event instanceof MethodEntryEvent) {
                     announce = orFirst(announce, onAssistEntry((MethodEntryEvent) event));
@@ -916,7 +954,7 @@ public final class DebugSession {
 
     /** The stand-in step over reached the next line of the frame. */
     private Runnable onAssistArrival(ThreadReference thread) {
-        clearStepAssist();
+        clearStepAssist(thread);
         try {
             Location at = thread.frame(0).location();
             if (at.lineNumber() < 0 || isOutsideProject(at)) {
@@ -950,14 +988,14 @@ public final class DebugSession {
      * it climbs to the nearest frame that has lines and belongs to the project.
      */
     private Runnable onAssistExit(MethodExitEvent event) {
-        if (!stepAssist.contains(event.request())) {
+        ThreadReference thread = event.thread();
+        if (!isAssist(thread, event.request())) {
             return null;
         }
-        ThreadReference thread = event.thread();
-        if (frameCountOf(thread) > assistOriginFrames) {
+        if (frameCountOf(thread) > assistOriginFrames.getOrDefault(thread.uniqueID(), 0)) {
             return null; // a nested call returning, not this frame
         }
-        clearStepAssist();
+        clearStepAssist(thread);
         if (armLineStepOnCaller(thread)) {
             return null; // carry on; the caller's lines are armed now
         }
