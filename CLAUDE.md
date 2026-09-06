@@ -18,9 +18,10 @@
 **这是一个通用工具,不绑定任何具体业务项目。** 需要一个 Grails 应用做靶子时,自建空白
 Grails 7 应用,不要借用别的业务仓库。
 
-## 当前主线任务:Groovy 断点绑定
+## 当前状态(2026-09-06)
 
-**设计已完成;T0 spike 验收 1–5 全部通过(2026-08-30)。生死线解除,下一步进 T1。**
+**Groovy 调试适配器已经做出来并发布**,Marketplace 上是 `0.1.17`(pre-release,
+publisher `gaolei8888`)。主线任务从「让断点能绑上」变成「继续把这个调试器做好用」。
 
 ### 设计文档(权威,先读它)
 
@@ -28,100 +29,85 @@ Grails 7 应用,不要借用别的业务仓库。
 docs/2026-08-29-vscode-groovy-debug-adapter.md
 ```
 
-含:根因分析(本机实测证据)、IntelliJ `GroovyPositionManager` 参照实现、核心算法、
-T0/T1/T2 分档计划、**§7.0 T0 实测结果**、**§7.1 Grails AST 变换与行号(静态)**、
-**§7.2 第 5 条实机复验**、§11 T0 spike 完整源码、§10 决策记录与未决问题。
+根因分析、算法、每一次实测的数据都在里面。**§7.x 是按时间排的实测记录**,改任何东西之前
+先看对应那一节 —— 里面记着好几个我自己踩过两次的坑。
 
 ### 一句话背景
 
-VSCode 里 `.groovy` 断点永远是空心的 —— `vscode-java-debug` 把「文件 URI → 全限定类名」写死在
-JDT 上,而 JDT 不索引 `.groovy`。没有任何配置能改。要解决必须自己提供 debug adapter。
-
-本仓库的 `grails.debug` 命令(`extension.js:86-124`)当前用 `type: 'java'` 把调试转交给
-`vscode-java-debug`,**因此原封不动继承了这个限制**。
+VSCode 里 `.groovy` 断点永远是空心的 —— `vscode-java-debug` 把「文件 URI → 全限定类名」
+写死在 JDT 上,而 JDT 不索引 `.groovy`。没有任何配置能改。所以自己写了一个 debug adapter。
 
 ### 核心思路
 
-attach 模式下不需要解析 Groovy:`ReferenceType.locationsOfLine(n)` 就是"这个类是否拥有该行"的
-权威答案,而闭包合成类 `Foo$_bar_closure1` 的 `sourceName()` 同样是 `Foo.groovy` —— 所以闭包
-问题自动消解,只需要从文件头的 `package` 行正则出前缀。详见设计文档 §4。
+attach 模式下不需要解析 Groovy:`ReferenceType.locationsOfLine(n)` 就是「这个类是否拥有
+该行」的权威答案,闭包合成类的 `sourceName()` 与外层同名 —— 所以闭包问题自动消解。详见 §4。
 
-### T0 验收结果(2026-08-30,全部通过)
+### 已经做出来的(括号是发布的版本)
 
-§11 的 spike 源码已编译验证(JDK 17 + `--add-modules jdk.jdi`)。1–4 条用自建的独立 Groovy
-靶子实测,第 5 条用**自建的空白 Grails 7.2.3 应用**(forge 生成的 rest_api + 一个 class 级
-`@Transactional` service,不借业务仓库)实测:
-
-| # | 验收项 | 结果 |
+| 功能 | 版本 | 验证程度 |
 |---|---|---|
-| 1 | attach | 通过 |
-| 2 | 普通方法行 | 通过 |
-| 3 | 闭包行 / 嵌套闭包行 | 通过 |
-| 4 | 类未加载时靠 `prefix + "*"` 补装 | 通过(Grails 上再次成立:attach 时匹配 0 个类) |
-| 5 | 行号准确性(Grails AST 变换) | **通过** —— 行号逐行精确,详见文档 §7.2 |
+| `.groovy` 断点、闭包、签名行下滑、命中去重 | 0.1.0 | harness + 编辑器 |
+| 199 条命令走对 wrapper(带连字符的走 `grailsw`) | 0.1.0 | 真实项目实测 |
+| 异常断点、Debug Tests、GORM trait 字段过滤 | 0.1.2 | harness |
+| devtools 重启后丢弃陈旧请求 | 0.1.6 | harness |
+| Grails scope(`params`/`request`/`response`/`session`)、map 展开 | 0.1.7 | harness |
+| hover / watch(只读路径求值) | 0.1.8 | harness |
+| step over 改用断点拼,不走 JDI stepping | 0.1.9 | harness |
+| logpoint、命中次数 | 0.1.10 | harness |
+| step into 进 `@Transactional`;**行断点全装 location** | 0.1.11 | harness |
+| 条件断点(**只做比较**) | 0.1.11 | harness |
+| setVariable | 0.1.12 | harness |
+| step assist 按线程分开 | 0.1.13 | harness |
+| **`.gsp` 断点** | 0.1.14 | harness |
+| GSP 单步;**stepIn 的多包过滤器缺陷**;Marketplace 图标 | 0.1.15 | harness |
+| war 里的 GSP 断点(按路径尾部匹配) | 0.1.16 | harness |
+| **数据断点**;Attach to Running App | 0.1.17 | harness / 未验 |
 
-实测得到的新结论,已写进文档,实现时必须考虑:
+### 最容易再踩一次的几个坑
 
-1. **闭包捕获的局部变量显示为 `groovy.lang.Reference`**,变量面板必须解包,不只是过滤合成变量。
-2. **方法签名行装不上断点** —— 该行没有行号项。注意这**不只是** `@Transactional` 把方法体搬进
-   `$tt__xxx` 的锅:`@NotTransactional` 的普通方法一样如此,纯 Groovy 项目同样会踩。需要
-   "向下吸附到第一条可执行行"的兜底。
-3. **一行会绑到同一方法内的多个 bci,且不能只取第一个** —— Groovy 4 给每条语句生成 callsite
-   慢路径 + primitive 快路径两份字节码,共用同一行号。实测行 34 只命中快路径(bci 73),取最小
-   bci(26)会让断点**永远不响**;而行 20 的两处在一次调用里都经过,会连停两次。
-   **结论:location 全装,去重放在命中侧(thread + frame + line)。**
-4. **`Foo$_bar_closure1` 不一定是用户闭包** —— `@Transactional` 生成的事务回调也占这个命名
-   (`doCall(TransactionStatus)`,无行号表)。§4 算法靠 `locationsOfLine()` 为空自动排除,
-   不需要认名字;但靠类名做启发式的实现会翻车。
+1. **JDI 一个请求上的多个 class filter 是「与」不是「或」**(§7.11)。要表达「或」就建多个
+   请求。这条曾让 stepIn 在任何有两个顶层包的项目里静默失效,而且是「单包靶子恰好掩盖了它」。
+2. **Groovy 一行编译两份、共用同一行号,跑的往往是第二份**(§7.2 ③)。断点必须**全装**,
+   去重放在命中侧。这条 §7.2 明明记过,我在 step assist 里又踩了一次(§7.6)。
+3. **`invokeMethod` 会让线程先跑起来,之前拿到的 `StackFrame` 全部作废**(§7.8)。
+   顺序必须是「先造值,再重新取帧,最后写」。
+4. **GSP 没有 SMAP**,行号映射在 `GroovyPageMetaInfo.lineNumbers`(`int[]`,**0 基**:
+   `lineNumbers[G-1]` 是生成行 G 的页面行);类名就是页面的绝对路径,部署后会变(§7.9–§7.12)。
+5. **一次只跑一个 harness case** —— `runcase.sh` 收尾会杀掉所有 `dapspike` 进程。
 
-### T1 进行中:`server/` 已建并跑通(2026-08-30)
+### 还没做 / 已知限制
 
-路线**已定:自写 DAP server,不 fork `microsoft/java-debug`**(理由见文档 §10 已决表)。
+- **编辑器 UI 自 0.1.9 之后一次没走过**。0.1.16 已装到本机。GSP 的 `contributes.languages`
+  是纯 UI 侧的东西,harness 完全不经过。
+- **macOS / Linux 的进程管理分支从没执行过**(`lsof` / `ps` / `SIGKILL`)。owner 说他来验。
+- **表达式求值**(条件断点的完整形态、Debug Console 的 repl)仍属 T2 —— 需要在目标 VM 内
+  编译执行 Groovy。目前只做比较与路径读取。
+- **预编译 GSP 不存在**:Grails 7.2.3 没有 `compileGsp` 任务,war 里是页面源码(§7.11)。
+- **AI 功能**(用 `vscode.lm` 把断点上下文喂给模型)已提出未开工,见下。
 
-`server/` = Java 17、**零第三方依赖**、产物 `dist/groovy-dap.jar` 约 44 KB。16 个 DAP 请求
-和 6 类事件已实现;断点绑定、签名行下滑、闭包补装、命中去重、`Reference` 解包、栈帧回映射
-都在空白 Grails 7.2.3 应用上用脚本驱动的 DAP 客户端验过。详见文档 **§7.3**。
+### 可能的下一步:AI 功能
 
-`dist/` 是构建产物,已 gitignore。**F5 之前先 `npm run build:server`**,否则 adapter 不存在。
+owner 问过。结论是**不要再做一个聊天框**(那是 Copilot 的活),值得做的是把调试器手里的
+活数据当上下文:
 
-`next` 与 `stepIn` 也已实机验证。step filter 是**两层**的:JDI 的包排除只管成本,
-「落点源文件在不在 `sourcePaths` 下」才是决定停不停的规则(见 §7.3「step filter」)。
+1. **解释异常** —— 异常断点命中时,把异常类型、message、过滤掉框架帧之后的栈、相关源码行
+   一起给模型。(owner 未选,我建议先做这条:那一刻上下文最全)
+2. **解释这次停顿** —— 当前帧 + 局部变量 + Grails scope。
+3. **自然语言 → 断点条件 / logpoint**,并且能当场用现有的比较式校验。
 
-**T1 余项**(文档 §7.3 有完整列表与实测数据):
-
-1. ~~编辑器里一次都没跑过~~ —— **已在 Extension Development Host 实跑通过**(2026-08-30,
-   见文档 §7.4):断点能下并转实心、闭包类加载后自动补装、变量面板正确、单请求总停顿 4 次
-   (去重生效)、多线程并发命中互不干扰。JVM 是 JDK 25。那一轮暴露并修掉了 4 个 harness
-   不可能发现的缺陷(裸 `gradlew.bat`、变量面板静态字段、toolchain、Stop 不杀应用 JVM)。
-   仍未验:编辑器里的单步手感(没按过 F10/F11)。
-2. ~~从行中段发起的 step over 会冲出整个方法体~~ —— **已修(2026-09-04)**:step over 不再走
-   JDI stepping,改成「本方法其余每一行的首个 location 各下一个线程过滤的断点 + 一个
-   MethodExit」,谁先到算谁。三次刻画触发条件的尝试全部被实验证伪,所以是绕开而不是诊断。
-3. ~~`stepIn` 步不进 `@Transactional` 方法~~、~~`stepOut` 没实测~~ —— 均已处理
-   (2026-09-05,见文档 §7.6):stepIn 改成「项目包过滤的 MethodEntry + 本方法行断点 +
-   方法退出」,能进事务方法也能进闭包体;stepOut 实测正确,不需要改。那一轮还抓出一个
-   0.1.9 就存在的真缺陷:**行断点每行只装第一个 location**,会整行跳过(§7.2 ③ 的坑)。
-   仍未验:多线程同时命中,以及编辑器里的单步手感。
-4. **JDI 一个请求上的多个 class filter 是「与」不是「或」** —— `armStepInto` 曾把所有包
-   过滤器加在一个 `MethodEntryRequest` 上,任何有两个顶层包的项目 stepIn 都会**静默失效**
-   (§7.11)。改成一条 pattern 一个请求。
-5. **GSP 断点已做**(§7.10,开发模式;单步见 §7.11):无 SMAP,靠 `GroovyPageMetaInfo.lineNumbers`
-   这个普通字段做行号映射;一个页面行只绑最外层类的最小生成行,否则一行会停 2~3 次。
-   预编译 GSP 不支持,GSP 里的单步没量过。
-6. 条件断点**已做,但只做比较**(§7.7):两边是路径或字面量,`==`/`!=`/`>`/`>=`/`<`/`<=`。
-   需要编译表达式的仍属 T2。读不了的条件**照常停**并印理由 —— 不停会像调试器坏了。
+代价要先说清楚:`engines.vscode` 要从 `^1.63` 提到 `^1.90`,且**用户没有 Copilot 时功能是灰的**。
 
 ### 已定的架构决策
 
 - **不新建仓库**,就在 `dc-grails-vs` 里做;**不改名**(理由见文档 §6.1)
-- DAP server **必须跑在 JVM 上**(JDI 是 Java API,JS 不可选),extension 侧用
+- DAP server **必须跑在 JVM 上**(JDI 是 Java API),extension 侧用
   `DebugAdapterExecutable('java', ['-jar', ...])` 拉起
 - **server 用 Java 写**,不用 Kotlin/Groovy —— 决定性理由是自举陷阱:用 Groovy 写的调试器
-  自己没法调。其余理由(启动延迟、vsix 体积、JDI 是 Java API)见文档 §10
-- 目标结构:`extension.js`(Grails 专属)+ `server/`(面向通用 Groovy,对 Grails 零依赖,
-  将来可零重构抽走)→ `dist/groovy-dap.jar` 打进 vsix
-- 编译与运行都需要 `--add-modules jdk.jdi`(该模块不在默认根模块集合中)
-- **要发布到 Marketplace** —— 因此 vsix 体积是真实约束,且 `publisher` 必须换成合法 id
+  自己没法调。其余理由见文档 §10
+- **读的那一侧一行代码都不跑**(hover / logpoint / 条件 / 变量面板 / 数据断点)。
+  **唯一的例外是 setVariable 造装箱值时调 `Integer.valueOf`**,理由与边界见 §7.8
+- 编译与运行都需要 `--add-modules jdk.jdi`
+
 
 ## 已知缺陷
 
@@ -153,11 +139,10 @@ Grails 项目上验过,但同样没有从 VSCode UI 走过一遍。
 
 ### 未修
 
-- **`publisher` 字段 `"Lei Gao"` 含空格,不是合法的 marketplace publisher id** —— 发布前必须
-  换成你注册的 id(需要你提供)。仓库名与 marketplace id 是两回事,`package.json` 的
-  `"name": "grails-gradle-extension"` 才是发布标识。
 - `devDependencies` 只声明了废弃的 `vscode: ^1.1.37`,而实际装的是 eslint / vscode-test;
-  `node_modules/eslint/` 包目录缺失,`npx eslint` 直接 MODULE_NOT_FOUND。
+  `node_modules/eslint/` 包目录缺失,`npx eslint` 直接 MODULE_NOT_FOUND。重装一次即可。
+- **`.gsp` 的语法高亮没有做** —— 只贡献了语言 id(为了能下断点),没有 grammar,
+  所以 GSP 文件在编辑器里是纯文本。
 
 ## 开发
 
@@ -175,8 +160,13 @@ npx eslint .
 注意:本机 `node_modules` 是坏的 —— `.bin/eslint` 在但 `node_modules/eslint/` 包目录不存在
 (pnpm 软链没建成),`npx eslint` 直接 MODULE_NOT_FOUND。重装一次即可。
 
-发布前注意:`publisher` 字段现值 `"Lei Gao"` 含空格,不是合法的 marketplace publisher id,
-需换成注册的 id。仓库名与 marketplace id 是两回事,后者是 `package.json` 的 `name` 字段。
+发布:`npx @vscode/vsce package --pre-release --no-dependencies` 然后
+`npx @vscode/vsce publish --pre-release --no-dependencies --packagePath <vsix>`。
+**次版本号必须是奇数**才算 pre-release,所以正式版之前只动 patch 位。
+publisher 是 `gaolei8888`,marketplace id 是 `gaolei8888.grails-gradle-extension`。
+
+图标是 `media/icon.png`,由 `scripts/make-icon.py` 生成(本机没有 PIL 也没有 ImageMagick,
+所以那个脚本用 stdlib 直接写 PNG)。
 
 ## 本机环境坑
 

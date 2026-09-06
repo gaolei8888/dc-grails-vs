@@ -44,6 +44,17 @@ public final class Variables {
         abstract List<Map<String, Object>> children();
 
         /**
+         * Registers this name as a watchable field and returns its token, or null.
+         *
+         * <p>Only a field can be watched: the JVM can report a write to one and
+         * has nothing to say about a local, an array element or a map entry. The
+         * pane offers "break on value change" only where this answers.
+         */
+        String watchable(String name, DataPoints points) {
+            return null;
+        }
+
+        /**
          * Writes one of this node's slots.
          *
          * <p>Refusing is the default: a change that quietly went nowhere would be
@@ -171,6 +182,11 @@ public final class Variables {
                 throws PathEvaluator.Unsupported {
             return setField(object, name, text, on);
         }
+
+        @Override
+        String watchable(String name, DataPoints points) {
+            return registerWatch(object, name, points);
+        }
     }
 
     private final class ArrayElements extends Node {
@@ -257,6 +273,11 @@ public final class Variables {
         Map<String, Object> set(String name, String text, ThreadReference on)
                 throws PathEvaluator.Unsupported {
             return setField(object, name, text, on);
+        }
+
+        @Override
+        String watchable(String name, DataPoints points) {
+            return registerWatch(object, name, points);
         }
     }
 
@@ -546,6 +567,32 @@ public final class Variables {
             throw new PathEvaluator.Unsupported("nothing is stopped");
         }
         return node.set(name, text, on);
+    }
+
+    /** The token for watching this name of this handle, or null if it is not a field. */
+    public synchronized String watchable(int handle, String name, DataPoints points) {
+        Node node = handles.get(handle);
+        return node == null ? null : node.watchable(name, points);
+    }
+
+    /**
+     * Registers a field of an object as watchable.
+     *
+     * <p>A synthetic field is refused for the same reason it is not shown: it is
+     * the compiler's, not the programmer's. A final one is refused because it is
+     * never written again, and a breakpoint that cannot fire is worse than one
+     * that was not offered.
+     */
+    private String registerWatch(ObjectReference object, String name, DataPoints points) {
+        if (isSynthetic(name)) {
+            return null;
+        }
+        Field field = object.referenceType().fieldByName(name);
+        if (field == null || field.isFinal()) {
+            return null;
+        }
+        return points.register(field, field.isStatic() ? null : object,
+                object.referenceType().name() + "." + name);
     }
 
     /** One field of one object, with a Reference unwrapped on the way in. */

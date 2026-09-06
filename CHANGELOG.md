@@ -1,5 +1,22 @@
 # Change Log
 
+## 0.1.17 — pre-release
+
+### Added
+
+- **Data breakpoints.** Right-click a field in the variables pane and choose
+  Break on Value Change: the debugger stops where the write happens and says what
+  the value was and what it is about to become. Watching a field is something the
+  JVM does itself, so nothing is run in your application to arm one. It watches
+  the object you pointed at, not every instance of its class. Measured on a
+  service singleton: `dapspike.SpikeService.touches: 0 -> 1`, then `1 -> 2`, each
+  stopping on the line that wrote it.
+- **Grails: Attach to Running App.** Asks for a host and port and attaches. Until
+  now the only ways in were Debug App, which starts the application itself, and a
+  hand-written launch configuration — which left no route to an application
+  already running: a war on a server, one started from a terminal, one in a
+  container. The last target is remembered per workspace.
+
 ## 0.1.16 — pre-release
 
 ### Added

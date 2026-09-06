@@ -1102,6 +1102,50 @@ tasks.withType(War).configureEach {
 同一轮回归:源码模式的 GSP(第 4 行 1 次、第 6 行 3 次、第 10 行不绑)、Groovy 断点
 `20 23 25 25 23 25`、Groovy step into `9 → 20 → 21 → 22 → 23`,全部与之前一致。
 
+### 7.13 数据断点与「附加到正在运行的应用」(2026-09-06)
+
+#### 数据断点
+
+字段被写入时中断。**这是 JVM 自己的能力**(`ModificationWatchpointRequest` /
+`AccessWatchpointRequest`),不需要在目标里跑任何代码,所以和读取侧的规则一致。
+
+DAP 侧两个请求:`dataBreakpointInfo`(问某个变量能不能被监视,返回一个不透明的 `dataId`)与
+`setDataBreakpoints`(用那些 id 武装)。`dataId` 是会话内的令牌,映射到
+`{Field, ObjectReference}`;**报 `canPersist: false`** —— 对象引用只在这条连接里有意义,
+跨会话记住的令牌什么都不指。
+
+三个设计选择:
+
+1. **按实例过滤**(`addInstanceFilter`),不是按类。面板里点的是「这个变量」,不是
+   「这个类的所有实例」。为此对该对象 `disableCollection()` —— 否则目标可能在点击与写入
+   之间把它回收掉,请求就静默地什么都不监视了。
+2. **只有字段能被监视**。局部变量、数组元素、map 项都不行 —— JVM 只报告字段写入。
+   `dataBreakpointInfo` 对它们返回 `dataId: null`,VSCode 就不显示那个菜单项。
+3. **final 字段拒绝**:它不会再被写,一个不可能命中的断点比没有更糟。合成字段同样拒绝,
+   理由和不显示它们一样。
+
+实测(靶子的 `SpikeService.touches`,服务是单例所以实例过滤能命中多次):
+
+```
+STOP 1 (breakpoint)       SpikeService:20   ← 在这里武装
+  dataBreakpointInfo -> dataId=field:1, "dapspike.SpikeService.touches (this instance)"
+  setDataBreakpoints -> verified
+STOP 2 (data breakpoint)  SpikeService.touch:57   dapspike.SpikeService.touches: 0 -> 1
+STOP 3 (data breakpoint)  SpikeService.touch:57   dapspike.SpikeService.touches: 1 -> 2
+```
+
+一个 JDI 细节:`EventRequestManager` **没有** `watchpointRequests()`,只有
+`modificationWatchpointRequests()` 与 `accessWatchpointRequests()` 两个分开的列表,
+清空时两个都要走。
+
+#### Grails: Attach to Running App
+
+在此之前进入调试只有两条路:Debug App(它自己启动应用)和手写 launch.json。**没有任何路径能
+连上一个已经在跑的应用** —— 而 §7.12 刚把「调试部署的 war」打通,正缺这一块。
+
+新命令问一个 `host:port`(只给端口也行),按 workspace 记住上次填的,然后用 `type: 'groovy'`
+起一个 attach 会话,`sourcePaths` 走同一套默认值。
+
 ### T2 — 好用(再 2~4 周)
 
 - **条件断点** —— 需在目标 VM 内求值 Groovy 表达式。最省事的路子是把表达式编成闭包后在目标 VM 里 `invokeMethod`。**这是最大的一块。**

@@ -19,8 +19,10 @@ import com.sun.jdi.event.ExceptionEvent;
 import com.sun.jdi.event.EventQueue;
 import com.sun.jdi.event.EventSet;
 import com.sun.jdi.event.MethodEntryEvent;
+import com.sun.jdi.event.ModificationWatchpointEvent;
 import com.sun.jdi.event.MethodExitEvent;
 import com.sun.jdi.event.StepEvent;
+import com.sun.jdi.event.WatchpointEvent;
 import com.sun.jdi.event.VMDeathEvent;
 import com.sun.jdi.event.VMDisconnectEvent;
 import com.sun.jdi.request.BreakpointRequest;
@@ -33,6 +35,7 @@ import com.sun.jdi.request.StepRequest;
 import org.groovydap.dap.DapTransport;
 import org.groovydap.jdi.BreakpointBinder;
 import org.groovydap.jdi.Condition;
+import org.groovydap.jdi.DataPoints;
 import org.groovydap.jdi.GrailsWebScope;
 import org.groovydap.jdi.GspSource;
 import org.groovydap.jdi.PathEvaluator;
@@ -108,6 +111,10 @@ public final class DebugSession {
     private final StopDeduper deduper = new StopDeduper();
     private final Variables variables = new Variables();
 
+    private final DataPoints dataPoints = new DataPoints();
+    /** What to call a watched field when it fires. */
+    private final Map<EventRequest, String> watchLabels = new ConcurrentHashMap<>();
+
     /** Generated-line to page-line matrices, by page class name. */
     private final Map<String, int[]> gspMatrices = new ConcurrentHashMap<>();
 
@@ -176,6 +183,8 @@ public final class DebugSession {
             case "scopes": onScopes(request); break;
             case "variables": onVariables(request); break;
             case "setVariable": onSetVariable(request); break;
+            case "dataBreakpointInfo": onDataBreakpointInfo(request); break;
+            case "setDataBreakpoints": onSetDataBreakpoints(request); break;
             case "continue": onContinue(request); break;
             case "next": onStep(request, StepRequest.STEP_OVER); break;
             case "stepIn": onStep(request, StepRequest.STEP_INTO); break;
@@ -207,6 +216,9 @@ public final class DebugSession {
         capabilities.put("supportsLogPoints", Boolean.TRUE);
         capabilities.put("supportsEvaluateForHovers", Boolean.TRUE);
         capabilities.put("supportsSetVariable", Boolean.TRUE);
+        // Watchpoints are a JVM facility, not something to be built: the VM
+        // reports a write to a field and says what it was and what it will be.
+        capabilities.put("supportsDataBreakpoints", Boolean.TRUE);
         capabilities.put("supportsExceptionInfoRequest", Boolean.TRUE);
         capabilities.put("exceptionBreakpointFilters", List.of(
                 filter("uncaught", "Uncaught exceptions", true),
@@ -455,6 +467,130 @@ public final class DebugSession {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("variables", variables.children(reference));
         transport.sendResponse(request, body);
+    }
+
+    /**
+     * What can be watched about a variable, if anything.
+     *
+     * <p>Answered for a field and refused for everything else, because a field is
+     * what the JVM can report a write to. The client shows "break on value
+     * change" only where this returns an id.
+     */
+    private void onDataBreakpointInfo(Map<String, Object> request) {
+        Map<String, Object> args = arguments(request);
+        String name = String.valueOf(args.get("name"));
+        int reference = (int) number(args.get("variablesReference"), 0);
+        Map<String, Object> body = new LinkedHashMap<>();
+        String dataId = reference > 0 ? variables.watchable(reference, name, dataPoints) : null;
+        if (dataId == null) {
+            body.put("dataId", null);
+            body.put("description", vm != null && !vm.canWatchFieldModification()
+                    ? "this VM cannot watch field modification"
+                    : name + " is not a field; only fields can be watched");
+        } else {
+            DataPoints.Point point = dataPoints.get(dataId);
+            body.put("dataId", dataId);
+            body.put("description", point.label
+                    + (point.instance == null ? " (any instance)" : " (this instance)"));
+            body.put("accessTypes", List.of("write", "read", "readWrite"));
+            // The id names an object in this connection to this VM; remembered
+            // for a later session it would name nothing.
+            body.put("canPersist", Boolean.FALSE);
+        }
+        transport.sendResponse(request, body);
+    }
+
+    /**
+     * Replaces the data breakpoints.
+     *
+     * <p>Whole-list, the way setBreakpoints is: the client sends what it wants to
+     * exist, so what exists is deleted first.
+     */
+    private void onSetDataBreakpoints(Map<String, Object> request) {
+        EventRequestManager erm = vm.eventRequestManager();
+        // JDI keeps the two kinds in separate lists; there is no combined one.
+        List<EventRequest> existing = new ArrayList<>();
+        existing.addAll(erm.modificationWatchpointRequests());
+        existing.addAll(erm.accessWatchpointRequests());
+        for (EventRequest watch : existing) {
+            erm.deleteEventRequest(watch);
+        }
+        watchLabels.clear();
+
+        List<Map<String, Object>> answers = new ArrayList<>();
+        Object raw = arguments(request).get("breakpoints");
+        if (raw instanceof List) {
+            for (Object item : (List<?>) raw) {
+                answers.add(item instanceof Map
+                        ? armWatchpoint((Map<?, ?>) item) : refused("not a breakpoint"));
+            }
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("breakpoints", answers);
+        transport.sendResponse(request, body);
+    }
+
+    private Map<String, Object> armWatchpoint(Map<?, ?> spec) {
+        DataPoints.Point point = dataPoints.get(String.valueOf(spec.get("dataId")));
+        if (point == null) {
+            return refused("that variable belongs to an earlier stop and is gone");
+        }
+        String access = spec.get("accessType") == null
+                ? "write" : String.valueOf(spec.get("accessType"));
+        try {
+            EventRequestManager erm = vm.eventRequestManager();
+            List<EventRequest> armed = new ArrayList<>();
+            if (!access.equals("read")) {
+                armed.add(erm.createModificationWatchpointRequest(point.field));
+            }
+            if (!access.equals("write")) {
+                if (!vm.canWatchFieldAccess()) {
+                    return refused("this VM cannot watch field access, only modification");
+                }
+                armed.add(erm.createAccessWatchpointRequest(point.field));
+            }
+            for (EventRequest watch : armed) {
+                if (point.instance != null) {
+                    // The user pointed at one object, not at the class.
+                    ((com.sun.jdi.request.WatchpointRequest) watch)
+                            .addInstanceFilter(point.instance);
+                }
+                watch.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+                watch.enable();
+                watchLabels.put(watch, point.label);
+            }
+            Map<String, Object> answer = new LinkedHashMap<>();
+            answer.put("verified", Boolean.TRUE);
+            return answer;
+        } catch (Exception e) {
+            return refused(e.getClass().getSimpleName()
+                    + (e.getMessage() == null ? "" : ": " + e.getMessage()));
+        }
+    }
+
+    private static Map<String, Object> refused(String reason) {
+        Map<String, Object> answer = new LinkedHashMap<>();
+        answer.put("verified", Boolean.FALSE);
+        answer.put("message", reason);
+        return answer;
+    }
+
+    /** A watched field was read or written. */
+    private Runnable onWatchpoint(WatchpointEvent event) {
+        ThreadReference thread = event.thread();
+        String label = watchLabels.getOrDefault(event.request(), event.field().name());
+        String description;
+        if (event instanceof ModificationWatchpointEvent) {
+            ModificationWatchpointEvent write = (ModificationWatchpointEvent) event;
+            description = label + ": " + variables.plain(write.valueCurrent())
+                    + " -> " + variables.plain(write.valueToBe());
+        } else {
+            description = label + " was read: " + variables.plain(event.valueCurrent());
+        }
+        stoppedThread = thread;
+        variables.reset();
+        deduper.forget(thread);
+        return () -> sendStopped("data breakpoint", thread, new ArrayList<>(), description);
     }
 
     /**
@@ -896,6 +1032,8 @@ public final class DebugSession {
                                         ? onAssistArrival(hit.thread())
                                         : onBreakpointHit(hit));
                     }
+                } else if (event instanceof WatchpointEvent) {
+                    announce = orFirst(announce, onWatchpoint((WatchpointEvent) event));
                 } else if (event instanceof MethodEntryEvent) {
                     announce = orFirst(announce, onAssistEntry((MethodEntryEvent) event));
                 } else if (event instanceof MethodExitEvent) {

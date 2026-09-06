@@ -71,8 +71,12 @@ view. The exception's message is read from the object rather than by calling
 `getMessage()`, so nothing runs in the application to describe a stop.
 
 Run **Grails: Debug App**. It starts `gradlew bootRun --debug-jvm`, waits for the
-JVM to report that it is listening, and attaches. Or write your own attach
-configuration:
+JVM to report that it is listening, and attaches.
+
+For an application this extension did not start — a war on a server, one started
+from a terminal, one in a container with the agent on — **Grails: Attach to
+Running App** asks for a host and port and attaches to it. Or write your own
+attach configuration:
 
 ```json
 {
@@ -238,6 +242,25 @@ reads as a broken debugger rather than as a condition to rewrite.
 
 With a hit count as well, the count advances only when the condition was true:
 `i > 1` with `=2` stops the second time `i > 1` holds.
+
+## Data breakpoints
+
+Right-click a field in the variables pane and choose **Break on Value Change**.
+The debugger stops where the write happens and says what the value was and what
+it is about to become:
+
+```
+dapspike.SpikeService.touches: 0 -> 1
+```
+
+Watching a field is a JVM facility, so nothing runs in your application to arm
+one. It watches the object you pointed at rather than every instance of the
+class, which is what "this variable" means in the pane. Reads can be watched too
+where the JVM allows it.
+
+Only fields can be watched — that is all the JVM reports writes to — so the
+option does not appear for a local, an array element or a map entry, and a final
+field is refused because it is never written again.
 
 ## Changing a value
 
