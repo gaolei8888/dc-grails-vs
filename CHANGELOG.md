@@ -1,5 +1,18 @@
 # Change Log
 
+## 0.1.13 — pre-release
+
+### Fixed
+
+- **Stepping two stopped threads no longer loses one of them.** The requests a
+  step is built from lived in one set, so stepping a second stopped thread
+  deleted the first thread's and it never stopped again — its request ran to
+  completion while the debugger waited. With every thread stopped at a
+  breakpoint, which is how this debugger stops, having two of them and stepping
+  either is ordinary rather than a corner. Measured with two requests in flight:
+  five stops each, interleaved, where before the second thread took over
+  entirely.
+
 ## 0.1.12 — pre-release
 
 ### Added
