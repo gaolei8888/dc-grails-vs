@@ -6,3 +6,8 @@ node_modules
 dist/
 server/build/
 server/.gradle/
+
+# H2 files an application under test can drop here if it is run from this
+# directory by mistake.
+*.mv.db
+*.trace.db
