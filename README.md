@@ -22,6 +22,21 @@ code --install-extension gaolei8888.grails-gradle-extension --pre-release
 Grails and Gradle commands from the command palette and a sidebar tree — and a
 debugger that can actually stop on a line of Groovy.
 
+## Grails QA — local preview
+
+**Run QA** in the Grails sidebar opens a panel for Domain constraints, real
+Hibernate/H2 persistence and browser page/form tests. Spring Security projects
+can use test credentials (optionally saved in VS Code credential storage), or
+skip password authentication in a temporary local QA instance. Load test users
+from the target database, select a tenant when detected, then select a user.
+QA requests then have that user's identity and roles,
+including Grails `currentUser`. Each result includes a short use-case description.
+
+Saved plans preserve regression expectations. Reports include failures,
+screenshots and uncovered cases; forms need configured success/error selectors.
+This first version targets Grails 7 with Hibernate and has been exercised on
+Windows. See the [QA setup and limits](docs/qa.md).
+
 ## Breakpoints in `.groovy` files
 
 VSCode does not bind breakpoints in Groovy. The Java debugger resolves "file →
@@ -90,6 +105,11 @@ attach configuration:
 
 ## Breakpoints in `.gsp` files
 
+GSP files include syntax highlighting for HTML, namespaced Grails tags (including
+custom tag libraries), `${…}` expressions, directives, scriptlets and GSP
+comments. JavaScript and CSS inside script/style blocks keep their highlighting.
+Toggle Block Comment uses `%{-- … --}%`.
+
 Set one in the gutter of a GSP and it binds, stops on the page's own line, and
 shows the `.gsp` in the call stack. The Grails scope, the variables pane and
 conditions all work there.
@@ -147,6 +167,7 @@ The application's log goes to an output channel — **Grails - Normal** for Run 
 
 ## Requirements
 
+- **VS Code 1.90 or newer.**
 - A Grails project with a Gradle wrapper (`gradlew`) in the folder you open.
 - **Java 17 or newer** on `JAVA_HOME` or `PATH`. The debug adapter runs on it; the
   JDK your application runs on can be a different one.
@@ -279,6 +300,50 @@ an int into a slot typed `java.lang.Integer`, and Groovy types nearly everything
 that way, so making a boxed number calls `valueOf` on the box class — a JDK static
 that takes no locks — single-threaded. Reading a value never runs anything.
 
+## Generate QA cases with AI
+
+Open **Grails: Run QA**, click **Generate QA cases with AI**, and choose a VS Code
+language model. It proposes cases from controller, view and Domain source excerpts.
+Review and save `ai-draft.json`, click **Use AI draft**, choose a test identity when
+needed, then **Run QA**. The local browser window shows the saved clicks, inputs
+and assertions; results include use-case descriptions, steps and screenshots.
+Clear **Show local browser during QA** to run headlessly.
+
+AI cases supplement the existing Domain baseline. Model output is validated data,
+and does not execute arbitrary code. No model provider leaves the saved plan intact.
+Generation infers expectations from bounded source excerpts, so review them before
+using them as a regression baseline. Run QA replays the plan; it does not yet use
+live screenshots for autonomous exploration.
+
+## Explain an exception
+
+Requires **VS Code 1.90 or later**. When paused on a Groovy exception, click
+**Explain Exception** in the status bar or run **Grails: Explain Exception**.
+Choose one of the language models available in VS Code. The explanation streams
+into a read-only document beside your code and includes the context used.
+
+The request sends the exception type/message, up to twelve application frames,
+and nearby source from up to three workspace files. It does not collect locals,
+Grails request/session values or environment variables. Source and exception
+messages can themselves contain sensitive text; **Grails: Show Exception Context**
+lets you inspect the local snapshot before choosing to use a model. No data is
+sent automatically when a breakpoint is hit. The snapshot uses current editor
+text (including unsaved changes), which may differ from a deployed application.
+
+Model access and any initial consent are handled by VS Code's
+[Language Model API](https://code.visualstudio.com/api/extension-guides/ai/language-model).
+No particular model or vendor is required. If no model is available, the command
+opens the local exception context with setup guidance. Cancel the progress
+notification to stop a request; continuing or stepping the debugger also cancels
+it. Explanations suggest changes but do not edit files or execute application code.
+
+## Development and tests
+
+Run `pnpm install`, `npm run build:server`, `pnpm test`, and `pnpm lint`.
+`pnpm test:editor` runs the real VS Code/Grails integration suite in an isolated
+profile. See [testing instructions](docs/testing.md) for the standalone testbed,
+environment overrides and test coverage.
+
 ## Known issues
 
 - **Attach only.** There is no launch configuration; the app is started by the
@@ -287,6 +352,9 @@ that takes no locks — single-threaded. Reading a value never runs anything.
   evaluating expressions. `list.size()` is refused by name, with the reason.
 - Two different applications serving the same view path in one JVM would make a
   GSP breakpoint ambiguous; it binds to neither rather than guessing.
+- The AI command's real exception capture and no-model behavior have been tested
+  in VS Code. Model streaming/error/cancellation paths have automated tests with
+  a simulated provider; a live provider response still needs verification.
 
 ## Star it
 

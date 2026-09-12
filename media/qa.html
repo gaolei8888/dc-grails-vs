@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-{{nonce}}'; script-src {{csp}};">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grails QA</title>
+<style nonce="{{nonce}}">
+body{max-width:920px;margin:32px auto;padding:0 24px;font-family:var(--vscode-font-family);color:var(--vscode-foreground)}
+h1{margin-bottom:6px}p{line-height:1.5}.muted{color:var(--vscode-descriptionForeground)}
+section{padding:20px;margin:20px 0;border:1px solid var(--vscode-panel-border);border-radius:6px}
+label{display:block;margin:14px 0 6px}input,select{box-sizing:border-box;width:100%;padding:8px;background:var(--vscode-input-background);color:var(--vscode-input-foreground);border:1px solid var(--vscode-input-border,transparent)}
+input[type=checkbox]{width:auto}button{padding:9px 15px;margin:6px 8px 6px 0;border:0;background:var(--vscode-button-background);color:var(--vscode-button-foreground);cursor:pointer}button:disabled{opacity:.5;cursor:default}.secondary{background:var(--vscode-button-secondaryBackground);color:var(--vscode-button-secondaryForeground)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:18px}.hidden{display:none}#notice.error{color:var(--vscode-errorForeground)}
+table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:9px;border-bottom:1px solid var(--vscode-panel-border)}pre{white-space:pre-wrap;overflow-wrap:anywhere}li{margin:8px 0}button:focus,input:focus,select:focus{outline:1px solid var(--vscode-focusBorder)}
+</style></head><body>
+<h1>Grails QA</h1><p id="project" class="muted">Inspecting the application…</p>
+<section><h2>Run tests</h2><p>Generate QA cases with AI, review the draft, then run them in your local browser. Domain constraint checks and saved expectations also run.</p>
+<button id="ai-plan">Generate QA cases with AI</button><button id="apply-ai" class="secondary">Use AI draft</button>
+<p class="muted">Choose a VS Code model to generate cases from controller, view and Domain source excerpts. Review and save the draft before using it. Run QA replays the saved steps and assertions.</p>
+<button id="run">Run QA</button><button id="plan" class="secondary">Generate / replace test plan</button><button id="cancel" class="secondary" disabled>Cancel</button>
+<button id="config" class="secondary">QA configuration</button><button id="report" class="secondary">Open full report</button>
+<p id="plan-state" class="muted"></p><p id="notice" role="status" aria-live="polite"></p></section>
+<section><h2>Test target</h2>
+<label><input id="show-browser" type="checkbox" checked> Show local browser during QA</label>
+<p class="muted">Opens a separate browser session for QA. Results include executed steps, screenshots and failures.</p>
+<label for="target">Application</label><select id="target"><option value="project">Start using the project's test environment and database</option><option value="isolated">Start a local QA instance with a temporary H2 database</option><option value="existing">Use an existing QA server</option></select>
+<div id="url-row" class="hidden"><label for="baseURL">QA server URL</label><input id="baseURL" type="url" placeholder="http://localhost:8080"></div>
+<p class="muted">By default, local runs use the project's test database, migrations and service configuration. Browser tests write test data. Temporary H2 is optional.</p>
+<label for="auth">Authentication</label><select id="auth"><option value="none">No login</option><option value="credentials">Log in with test credentials</option><option id="bypass" value="bypass">Skip authentication — local Grails Spring Security only</option></select>
+<p id="auth-note" class="muted"></p>
+<div id="identity-picker" class="hidden">
+<button id="load-identities" class="secondary">Load test users / tenants</button>
+<div id="tenant-row" class="hidden"><label for="tenant">Test tenant</label><select id="tenant"><option value="">Select a tenant</option></select></div>
+<label for="test-user">Test user</label><select id="test-user"><option value="">Load and select a test user</option></select>
+<p id="identity-status" role="status" aria-live="polite">Load the list, then select an existing user. The username does not need to contain “test”.</p>
+<label for="user-search">Filter usernames (optional)</label><input id="user-search" placeholder="Leave empty to show all available users">
+<button id="search-identities" class="secondary">Search</button><button id="clear-user-search" class="secondary">Clear filter</button><button id="more-identities" class="secondary" disabled>Load more users</button>
+<p class="muted">Reads the selected test database. Choose a tenant when detected, then a user. Loading starts the local test application; the same process is used for this QA run.</p>
+</div>
+<div id="credentials" class="hidden"><div class="row"><div><label for="username">Test username</label><input id="username" autocomplete="off"></div><div id="password-row"><label for="password">Test password</label><input id="password" type="password" autocomplete="off" placeholder="Leave blank to use saved credentials"></div></div>
+<label id="remember-row"><input id="remember" type="checkbox" checked> Remember in VS Code credential storage for this project and target</label>
+<button id="forget" class="secondary">Forget saved credentials</button>
+<p id="credential-note" class="muted">Default login page: /login/auth. Configure custom login selectors in QA configuration. Credentials are never added to generated tests or reports.</p></div>
+</section>
+<section id="results" class="hidden"><h2 id="result-title">Results</h2><table><thead><tr><th>Layer</th><th>Tests</th><th>Failed</th><th>Skipped</th></tr></thead><tbody id="counts"></tbody></table><h3>Test cases</h3><table><thead><tr><th>Test case</th><th>Use case</th><th>Status</th></tr></thead><tbody id="cases"></tbody></table><h3>Failures and coverage gaps</h3><ul id="gaps"></ul></section>
+<script src="{{script}}"></script></body></html>

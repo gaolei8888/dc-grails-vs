@@ -1,5 +1,139 @@
 # Change Log
 
+## 0.1.30 — pre-release (local)
+
+- Generate browser QA drafts with a user-selected VS Code language model using
+  bounded controller, view and Domain source excerpts. Review/edit drafts before
+  applying them; preserve Domain expectations and back up the previous plan.
+- Execute validated click, fill, select, check and assertion steps in the local
+  browser, with step logs, screenshots and failures. Show the browser by default
+  in the QA panel, including runs that reuse a selected test identity.
+- Handle missing providers, cancellation and invalid model output explicitly;
+  model output cannot execute JavaScript or shell commands.
+
+## 0.1.29 — pre-release (2026-09-08)
+
+- Distinguish an empty username search from a test database with no users.
+  Show result counts and guidance next to the selector, add Clear filter, and
+  clear stale searches when reloading or switching tenants.
+- Put the user selector before optional search controls and scroll loaded
+  choices into view even when the Output panel reduces the available space.
+
+## 0.1.28 — pre-release (local fix)
+
+- Enumerate tenants inside a read-only transaction so custom resolvers using
+  DetachedCriteria without their own transaction have a Hibernate session.
+- Log identity discovery failures in QA output and reject redirects/non-JSON
+  responses without forwarding the QA capability.
+- Disable the security chain's servlet registration only in the protected local
+  Skip process, retaining security services even when test configuration replaces
+  the external filter-chain override.
+
+## 0.1.27 — pre-release (local fix)
+
+- Load test users and tenants from the running project's test database for Skip
+  authentication. Show a tenant selector only when multi-tenancy is detected,
+  with tenant-scoped username search/pagination and explicit empty-list errors.
+- Reuse the discovery process for the QA run. Bind tenant and request context
+  before loading the selected user, support session resolver attribute names,
+  and record the chosen tenant in the report.
+- Keep discovery behind the per-run QA capability; return username projections
+  without password fields. Cancel/close/target changes release the process/lock.
+
+## 0.1.26 — pre-release (local fix)
+
+- Skip authentication now accepts a test username without a password and loads
+  the project's principal and roles for QA requests, supporting `currentUser`.
+  Scope the identity to the tool-owned loopback test process and QA browser.
+- Add a short use-case description for every Domain and browser result, shown
+  in the QA panel and JSON report without replacing frozen expectations.
+- Print browser failure details in QA output and explain remaining login redirects.
+- Add real current-user/role checks to the fixture and identity isolation checks.
+
+## 0.1.25 — pre-release (local fix)
+
+- Keep Spring Security and REST service beans enabled during local QA bypass;
+  bypass HTTP filters for that process instead of disabling the whole plugin.
+- Report the missing Spring bean name in startup failures. Extend the real
+  fixture with a dependency on the REST plugin's tokenStorageService.
+
+## 0.1.24 — pre-release (local fix)
+
+- Default UI app launch to the project's Grails test environment and database.
+  Preserve its datasource settings and migrations; temporary H2 is opt-in via
+  the target selector or `ui.database: "h2"` / `--database=h2`.
+- Allow project-configured multiple test datasources. Keep isolated Domain
+  constraint/H2 tests separate from application UI database selection.
+- Remove ANSI color/control sequences from QA logs and output while retaining
+  error text and credential redaction.
+
+## 0.1.23 — pre-release (local fix)
+
+- Detect fatal Spring Boot startup failures immediately, stop the owned QA
+  process and write the current report even when background services keep the
+  failed application alive. Explain migration SQL failures on temporary H2.
+
+## 0.1.22 — pre-release (local fix)
+
+- Stop treating `excluded-datasources` and commented examples as multiple
+  datasource declarations. Refresh launch capability gaps without changing
+  frozen test expectations.
+- Print Domain passed/failed/skipped counts and the execution error separately.
+
+## 0.1.21 — pre-release (local fix)
+
+- Supply H2 for QA inventory/tests and temporary QA application launch when
+  absent from the task runtime. Keep the application's dependency graph and
+  build files unchanged; retain an existing H2 driver when present.
+- Remove the fixture's H2 dependency so regression tests cover this case.
+
+## 0.1.20 — pre-release (local fix)
+
+- Fix QA failing to start Gradle in Windows environments that disable implicit
+  current-directory executable lookup. Invoke the workspace wrapper explicitly.
+- Add a regression test reproducing the failure, including paths and arguments
+  containing spaces.
+
+## 0.1.19 — pre-release (2026-09-06)
+
+- Add Run QA panel and standalone CLI: runtime Domain inventory, frozen
+  constraint tests, real Hibernate/H2 persistence and simple uniqueness.
+- Add browser page/form checks, screenshots and explicit coverage gaps.
+- Detect Grails Spring Security: test credentials through real login,
+  per-project/target SecretStorage, or authentication bypass only on a
+  temporary local QA instance. Existing servers cannot bypass security.
+- Bundle Playwright driver without browser binaries. Add an isolated Grails
+  fixture, real QA editor tests and frozen-baseline mutation regression.
+
+## 0.1.18 — pre-release (local build, not published)
+
+### Added
+
+- GSP syntax highlighting: HTML, Grails/custom tags, attribute expressions,
+  nested Groovy closures, directives, scriptlets and GSP comments. Embedded
+  JavaScript/CSS retain their grammars. Block comments use `%{-- … --}%`.
+- **Grails: Explain Exception** and **Grails: Show Exception Context**. An
+  exception stop exposes a status bar action. Choose an available VS Code model
+  to explain the exception using application frames and nearby workspace source.
+  Responses stream into a read-only document; cancellation, resume, provider
+  errors and missing models are handled. No locals or Grails request/session
+  values are collected, and nothing is sent automatically.
+- Real VS Code/Grails regression tests with screenshots and protocol artifacts,
+  plus TextMate grammar and simulated-provider tests.
+
+### Fixed
+
+- Attach to Running App referenced an undefined `workspaceFolder` and failed
+  after accepting the address. It now resolves and validates the workspace first.
+- Replaced stale development dependencies and the placeholder test with working
+  lint, unit and editor-test commands.
+
+### Changed
+
+- Requires VS Code **1.90+** for the Language Model API.
+- Live model generation remains unverified; real exception capture and the
+  missing-model path were tested in VS Code, streaming paths with a test provider.
+
 ## 0.1.17 — pre-release
 
 ### Added

@@ -1,0 +1,76 @@
+// Applied only to this invocation. The application's build.gradle is untouched.
+gradle.projectsEvaluated {
+    def p = gradle.rootProject
+    // QA owns its temporary database dependency. Do not require the application
+    // to declare H2, or add it to the application's published runtime graph.
+    def qaH2 = p.configurations.detachedConfiguration(p.dependencies.create('com.h2database:h2:2.4.240'))
+    def ensureH2 = { task ->
+        if (!task.classpath.files.any { it.name ==~ /h2-[0-9].*\.jar/ }) {
+            task.classpath += qaH2
+        }
+    }
+    def sources = p.findProperty('grailsQaSources')
+    if (sources) {
+        def qa = p.sourceSets.create('grailsQa') {
+            groovy.srcDir(sources)
+            compileClasspath += p.sourceSets.main.output + p.configurations.testCompileClasspath
+            runtimeClasspath += output + compileClasspath + p.configurations.testRuntimeClasspath
+        }
+        p.tasks.register('grailsQaTest', Test) {
+            doFirst { ensureH2(delegate) }
+            testClassesDirs = qa.output.classesDirs
+            classpath = qa.runtimeClasspath
+            useJUnitPlatform()
+            maxParallelForks = 1
+            systemProperty 'grails.env', 'test'
+            systemProperty 'grails.qa.output', p.property('grailsQaOutput')
+            reports.junitXml.outputLocation = p.file(p.property('grailsQaOutput') + '/junit')
+            reports.html.outputLocation = p.file(p.property('grailsQaOutput') + '/html')
+            outputs.upToDateWhen { false }
+        }
+    }
+    if (p.hasProperty('grailsQaPort')) {
+        def useH2 = p.findProperty('grailsQaDatabase') == 'h2'
+        def overrides = p.file(p.property('grailsQaOutput') + '/qa-overrides.groovy')
+        overrides.text = useH2 ? """
+dataSource.url = 'jdbc:h2:mem:grailsQa_${p.property('grailsQaPort')};DB_CLOSE_DELAY=-1'
+dataSource.driverClassName = 'org.h2.Driver'
+dataSource.username = 'sa'
+dataSource.password = ''
+dataSource.dbCreate = 'create-drop'
+""" : ''
+        if (p.hasProperty('grailsQaBypass')) {
+            def supportDir = p.file(p.property('grailsQaOutput') + '/identity')
+            def runtime = p.sourceSets.create('grailsQaIdentity') {
+                groovy.srcDir(new File(supportDir, 'src'))
+                resources.srcDir(new File(supportDir, 'resources'))
+                compileClasspath += p.configurations.runtimeClasspath
+                runtimeClasspath += output + compileClasspath
+            }
+            p.tasks.named('bootRun') {
+                dependsOn p.tasks.named('grailsQaIdentityClasses')
+                classpath += runtime.output
+            }
+            overrides.append("""
+grails.plugin.springsecurity.active = true
+grails.plugin.springsecurity.filterChain.chainMap = [[pattern: '/**', filters: 'none']]
+""")
+        }
+        p.tasks.named('bootRun') {
+            if (useH2) doFirst { ensureH2(delegate) }
+            if (overrides.length()) systemProperty 'grails.config.locations', overrides.toURI().toString()
+            systemProperty 'grails.qa.database', useH2 ? 'h2' : 'project'
+            systemProperty 'grails.env', 'test'
+            systemProperty 'server.address', '127.0.0.1'
+            systemProperty 'server.port', p.property('grailsQaPort')
+            systemProperty 'spring.devtools.restart.enabled', 'false'
+            if (useH2) {
+                systemProperty 'dataSource.url', 'jdbc:h2:mem:grailsQa_' + p.property('grailsQaPort') + ';DB_CLOSE_DELAY=-1'
+                systemProperty 'dataSource.driverClassName', 'org.h2.Driver'
+                systemProperty 'dataSource.username', 'sa'
+                systemProperty 'dataSource.password', ''
+                systemProperty 'dataSource.dbCreate', 'create-drop'
+            }
+        }
+    }
+}

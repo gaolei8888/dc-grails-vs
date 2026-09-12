@@ -1146,6 +1146,51 @@ STOP 3 (data breakpoint)  SpikeService.touch:57   dapspike.SpikeService.touches:
 新命令问一个 `host:port`(只给端口也行),按 workspace 记住上次填的,然后用 `type: 'groovy'`
 起一个 attach 会话,`sourcePaths` 走同一套默认值。
 
+### 7.14 编辑器回归、GSP 高亮与解释异常(2026-09-06，0.1.18 本地未发布)
+
+本轮从协议 harness 转到**真实 VS Code Extension Host + Playwright/CDP**。
+测试脚本 `scripts/test-editor.js` 启动独立 Grails 靶子和隔离编辑器，自动选端口，
+只清理自己启动的进程树。靶子仍是 `../grails-dap-testbed/dapspike`，不使用业务项目。
+
+实际发现并修复：`grails.attach` 中 `workspaceFolder` 未定义，输入地址后在生成
+`sourcePaths` 时抛错。增加 `requireWorkspace` 检查后真实输入框连接通过。
+
+编辑器回归覆盖：
+
+- Attach 输入 host:port 后启动 Groovy 会话。
+- GSP 文件识别、gutter 断点、页面第 4 行命中、编辑器 Step Over 离开该行。
+- Variables 展开 `this.touches`，右键 **Break on Value Change**，连续捕获 `0 -> 1`
+  与 `1 -> 2`，HTTP 响应也与写入结果一致。
+- 真实 `IllegalStateException` 暂停后读取类型/message/应用帧/附近源码；无模型时展示
+  本地上下文与提示；继续执行后清除状态栏操作。
+
+测试脚本的两个坑：测试靶子是 REST 路由，`/spike/page` 实际执行 `show(id:'page')`；
+GSP 应走 `/gsppage`，字段写入应走 `/bump`。VS Code 右键菜单刚弹出时立即点击可能被
+菜单的防误触逻辑忽略；等待菜单截图稳定后使用有按下时长的点击，才能完成实际菜单操作。
+
+高亮采用 `syntaxes/gsp.tmLanguage.json`，复用内建 `text.html.basic` 和 `source.groovy`。
+GSP 注入作用于 HTML 文本和属性，但排除 comment/已嵌入 Groovy；这样不会将注释内的
+`${...}` 当代码，也不会在嵌套 Groovy 内重新开一层 GSP。自定义 namespace 标签同样识别。
+TextMate + Oniguruma 测试覆盖嵌套闭包、属性表达式、多行注释/scriptlet、directive、JS/CSS。
+
+AI 实现位于 `lib/exception-context.js` 与 `lib/explain-exception.js`，**不修改 DAP server**。
+通过标准 `exceptionInfo` / `stackTrace` 读取当前异常，最多 12 个工作区帧和 3 个文件的
+附近源码；不求值、不采集局部变量、Grails request/session 或环境变量。当前 editor 文本
+可能含未保存改动，snapshot 会注明。路径在工作区之外的源码不读取。
+
+用户可先运行 `Grails: Show Exception Context`；`Grails: Explain Exception` 才调用
+`vscode.lm.selectChatModels({})` 并让用户选模型，无固定 provider/model。没有模型时
+仍提供本地快照。授权由 VS Code 处理，不在断点命中时自动请求模型。
+模型输入按 `countTokens` 预算裁剪，输出流写入只读文档，不渲染可执行 webview。
+继续/单步/结束/stop 变化时丢弃旧上下文并取消请求；处理用户取消、provider 拒绝与流中断。
+
+**验证边界**：真实模型生成尚未验证。隔离编辑器没有可用 provider；模拟模型测试验证了
+流式成功、选择取消、读取期间 resume、流中 resume、权限/网络失败、输入预算与跨会话隔离，
+这些不能算成在线模型实测。macOS/Linux 进程分支仍未在本轮验证。
+
+运行方法与产物说明见 `docs/testing.md`。本地包为 `0.1.18`，Marketplace 仍为上次记录的
+`0.1.17`；本轮未执行发布或替换用户日常编辑器安装。
+
 ### T2 — 好用(再 2~4 周)
 
 - **条件断点** —— 需在目标 VM 内求值 Groovy 表达式。最省事的路子是把表达式编成闭包后在目标 VM 里 `invokeMethod`。**这是最大的一块。**
