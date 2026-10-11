@@ -86,7 +86,15 @@ public final class DebugSession {
         // stepped through.
         "org.slf4j.*", "ch.qos.logback.*", "org.hibernate.*", "com.zaxxer.*",
         // The servlet container, which is what a controller action returns into.
-        "org.apache.tomcat.*", "org.apache.catalina.*", "org.apache.coyote.*");
+        // juli is Tomcat's logger, and its class loader traces through it for every
+        // class it loads: the first `new` of a closure or the first call through a
+        // call site initialises a metaclass, which loads classes, which lands a step
+        // in DirectJDKLog.isTraceEnabled. That frame is deeper than the line being
+        // stepped, so onStepDone steps out of it -- and a step out never comes back
+        // to the call it interrupted, it runs the rest of the call (the whole `each`,
+        // closure body included) and stops after it.
+        "org.apache.tomcat.*", "org.apache.catalina.*", "org.apache.coyote.*",
+        "org.apache.juli.*");
 
     /** Guard against stepping forever through code the user cannot see. */
     private static final int MAX_AUTOMATIC_RESTEPS = 500;
