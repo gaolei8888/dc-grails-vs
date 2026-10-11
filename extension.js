@@ -454,9 +454,21 @@ function javaDebugAvailable() {
   return !!vscode.extensions.getExtension('vscjava.vscode-java-debug');
 }
 
-/** 'groovy' (this extension's adapter) or 'java' (vscode-java-debug). */
+/**
+ * The debug type of this extension's adapter. Not plain 'groovy': a debug type
+ * takes one adapter factory, and other Groovy extensions (Code Groovy) already
+ * hold that name.
+ */
+const DEBUG_TYPE = 'groovy-dap';
+
+/**
+ * The debug type to start a session with. The grails.debug.adapter setting keeps
+ * its 'groovy' / 'java' values (vscode-java-debug being the second) so a stored
+ * setting stays valid; 'groovy' means DEBUG_TYPE.
+ */
 function debugAdapterType() {
-  return vscode.workspace.getConfiguration('grails').get('debug.adapter', 'groovy');
+  const adapter = vscode.workspace.getConfiguration('grails').get('debug.adapter', 'groovy');
+  return adapter === 'groovy' ? DEBUG_TYPE : adapter;
 }
 
 /**
@@ -841,13 +853,37 @@ function currentSpecName() {
   return match ? match[1] + '.' + base : base;
 }
 
+/**
+ * A debug type takes one adapter factory, and VSCode throws if it is taken. That
+ * must not abort activate(): without the debugger the status bar, the commands and
+ * the view are still worth having. Anything but that conflict is a real bug.
+ */
+function registerAdapterFactory(context) {
+  try {
+    context.subscriptions.push(
+      vscode.debug.registerDebugAdapterDescriptorFactory(DEBUG_TYPE, makeAdapterFactory(context)));
+  } catch (err) {
+    if (!/can only be registered once/.test(String(err && err.message))) {
+      throw err;
+    }
+    outputChannel('Grails - Debug').appendLine(
+      '[grails] could not register the "' + DEBUG_TYPE + '" debug adapter: '
+      + (err.stack || err.message));
+    const other = vscode.extensions.getExtension('marlon407.code-groovy');
+    vscode.window.showWarningMessage(
+      (other ? 'Code Groovy (marlon407.code-groovy)' : 'Another extension')
+      + ' already registered the "' + DEBUG_TYPE + '" debug type, so the Groovy '
+      + 'debugger of this extension is unavailable. Everything else still works.');
+  }
+}
+
 function activate(context) {
   // The debug adapter that makes .groovy breakpoints bind at all. Registered
-  // unconditionally so a hand-written launch.json of type "groovy" works whether
-  // or not the app was started through this extension.
+  // unconditionally so a hand-written launch.json of type "groovy-dap" works
+  // whether or not the app was started through this extension.
+  registerAdapterFactory(context);
   context.subscriptions.push(
-    vscode.debug.registerDebugAdapterDescriptorFactory('groovy', makeAdapterFactory(context)),
-    vscode.debug.registerDebugConfigurationProvider('groovy', groovyConfigurationProvider),
+    vscode.debug.registerDebugConfigurationProvider(DEBUG_TYPE, groovyConfigurationProvider),
     vscode.window.registerTreeDataProvider('grailsCommands', new GrailsCommandsProvider())
   );
   createStatusBar(context);

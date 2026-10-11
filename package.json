@@ -27,7 +27,7 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onDebugResolve:groovy"
+    "onDebugResolve:groovy-dap"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -63,7 +63,7 @@
     ],
     "debuggers": [
       {
-        "type": "groovy",
+        "type": "groovy-dap",
         "label": "Groovy (attach)",
         "languages": [
           "groovy"
@@ -102,7 +102,7 @@
         },
         "initialConfigurations": [
           {
-            "type": "groovy",
+            "type": "groovy-dap",
             "request": "attach",
             "name": "Attach to Grails (Groovy)",
             "hostName": "localhost",
@@ -114,7 +114,7 @@
             "label": "Groovy: attach to a running JVM",
             "description": "Binds breakpoints in .groovy files, closures included.",
             "body": {
-              "type": "groovy",
+              "type": "groovy-dap",
               "request": "attach",
               "name": "Attach to Grails (Groovy)",
               "hostName": "localhost",
