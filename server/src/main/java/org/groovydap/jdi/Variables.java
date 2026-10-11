@@ -3,6 +3,7 @@ package org.groovydap.jdi;
 import com.sun.jdi.AbsentInformationException;
 import com.sun.jdi.ArrayReference;
 import com.sun.jdi.Field;
+import com.sun.jdi.InconsistentDebugInfoException;
 import com.sun.jdi.LocalVariable;
 import com.sun.jdi.ObjectReference;
 import com.sun.jdi.StackFrame;
@@ -45,6 +46,8 @@ public final class Variables {
     private final class FrameLocals extends Node {
         final ThreadReference thread;
         final int frameIndex;
+        /** Locals the last children() call could not read yet; see below. */
+        final Set<String> unreadable = new HashSet<>();
 
         FrameLocals(ThreadReference thread, int frameIndex) {
             this.thread = thread;
@@ -54,6 +57,7 @@ public final class Variables {
         @Override
         List<Map<String, Object>> children() {
             List<Map<String, Object>> out = new ArrayList<>();
+            unreadable.clear();
             try {
                 StackFrame frame = thread.frame(frameIndex);
                 ObjectReference self = frame.thisObject();
@@ -66,12 +70,21 @@ public final class Variables {
                 } catch (AbsentInformationException e) {
                     return out;
                 }
-                Map<LocalVariable, Value> values = frame.getValues(locals);
                 for (LocalVariable local : locals) {
                     if (isSynthetic(local.name())) {
                         continue;
                     }
-                    out.add(describe(local.name(), values.get(local), local.typeName()));
+                    try {
+                        out.add(describe(local.name(), frame.getValue(local), local.typeName()));
+                    } catch (InconsistentDebugInfoException e) {
+                        // Groovy starts the table entry of a boxed parameter's
+                        // Reference at bci 1, but the astore that fills the slot
+                        // is at bci 9, so on entry to the closure the slot is
+                        // "live" yet empty and the VM refuses to read it. The
+                        // parameter in its old slot is out of range for JDI too,
+                        // so there is nothing to show until the box exists.
+                        unreadable.add(local.name());
+                    }
                 }
             } catch (Exception e) {
                 out.add(error(e));
