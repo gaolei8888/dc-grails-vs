@@ -28,6 +28,7 @@ import com.sun.jdi.request.StepRequest;
 import org.groovydap.dap.DapChannel;
 import org.groovydap.dap.DapTransport;
 import org.groovydap.jdi.BreakpointBinder;
+import org.groovydap.jdi.EvaluationException;
 import org.groovydap.jdi.GrailsWebScope;
 import org.groovydap.jdi.SourceLocator;
 import org.groovydap.jdi.StopDeduper;
@@ -43,6 +44,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 /**
  * One debug session: the DAP request loop on one side, a JDI connection to the
@@ -176,8 +178,9 @@ public final class DebugSession {
             case "stepIn": onStep(request, StepRequest.STEP_INTO); break;
             case "stepOut": onStep(request, StepRequest.STEP_OUT); break;
             case "pause": onPause(request); break;
-            case "evaluate": transport.sendError(request,
-                    "expression evaluation is not implemented yet"); break;
+            case "evaluate": onEvaluate(request); break;
+            case "setVariable": onSetVariable(request); break;
+            case "setExpression": onSetExpression(request); break;
             case "disconnect":
             case "terminate":
                 transport.sendResponse(request, null);
@@ -195,8 +198,13 @@ public final class DebugSession {
         // Not yet: conditional breakpoints need Groovy expressions compiled and
         // evaluated inside the target VM, which is the T2 work item.
         capabilities.put("supportsConditionalBreakpoints", Boolean.FALSE);
-        capabilities.put("supportsEvaluateForHovers", Boolean.FALSE);
-        capabilities.put("supportsSetVariable", Boolean.FALSE);
+        // Variable paths only (a, a.b, list[0], map['k']): resolved by reading the
+        // variables tree, never by running code in the target.
+        capabilities.put("supportsEvaluateForHovers", Boolean.TRUE);
+        // Literals only (numbers, true/false, 'c', "text", null), into a local, an
+        // instance field or an array element; see ValueParser for what is refused.
+        capabilities.put("supportsSetVariable", Boolean.TRUE);
+        capabilities.put("supportsSetExpression", Boolean.TRUE);
         capabilities.put("supportsExceptionInfoRequest", Boolean.TRUE);
         capabilities.put("exceptionBreakpointFilters", List.of(
                 filter("uncaught", "Uncaught exceptions", true),
@@ -390,6 +398,64 @@ public final class DebugSession {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("scopes", scopes);
         transport.sendResponse(request, body);
+    }
+
+    /**
+     * Watch, hover and Debug Console. Read-only by construction: the expression is a
+     * variable path, resolved by {@link Variables#evaluate}, because evaluating
+     * anything else would mean invoking a method in the target.
+     */
+    private void onEvaluate(Map<String, Object> request) {
+        Map<String, Object> args = arguments(request);
+        ThreadReference thread = frameThread(args);
+        respond(request, "evaluate", thread, () -> variables.evaluate(thread, frameIndex(args),
+                () -> GrailsWebScope.find(vm, thread), text(args.get("expression"))));
+    }
+
+    /** The Variables panel's "Set Value": a literal into a local, a field or an array element. */
+    private void onSetVariable(Map<String, Object> request) {
+        Map<String, Object> args = arguments(request);
+        respond(request, "change a variable", stoppedThread, () -> variables.setVariable(
+                (int) number(args.get("variablesReference"), 0),
+                text(args.get("name")), text(args.get("value"))));
+    }
+
+    /** Watch's "Set Value": the same write, found by walking a variable path. */
+    private void onSetExpression(Map<String, Object> request) {
+        Map<String, Object> args = arguments(request);
+        ThreadReference thread = frameThread(args);
+        respond(request, "change a variable", thread, () -> variables.setExpression(thread,
+                frameIndex(args), () -> GrailsWebScope.find(vm, thread),
+                text(args.get("expression")), text(args.get("value"))));
+    }
+
+    /** The thread a request's frameId names; a Debug Console line with no frame uses the stopped one. */
+    private ThreadReference frameThread(Map<String, Object> args) {
+        return args.get("frameId") instanceof Number
+                ? threadsById.get((int) number(args.get("frameId"), -1) >> 16) : stoppedThread;
+    }
+
+    private static int frameIndex(Map<String, Object> args) {
+        return args.get("frameId") instanceof Number
+                ? (int) number(args.get("frameId"), -1) & 0xFFFF : 0;
+    }
+
+    /** Answers with {@code work}, or with why not: never throws, never changes what is suspended. */
+    private void respond(Map<String, Object> request, String doing, ThreadReference thread,
+            Supplier<Map<String, Object>> work) {
+        try {
+            if (vm == null || thread == null || !thread.isSuspended()) {
+                transport.sendError(request, "no stopped frame to " + doing + " in "
+                        + "(the program is running, or has resumed since this frame was shown)");
+                return;
+            }
+            transport.sendResponse(request, work.get());
+        } catch (EvaluationException e) {
+            transport.sendError(request, e.getMessage());
+        } catch (Exception e) {
+            transport.sendError(request, "cannot " + doing + ": " + e.getClass().getSimpleName()
+                    + (e.getMessage() == null ? "" : ": " + e.getMessage()));
+        }
     }
 
     private void onVariables(Map<String, Object> request) {
@@ -914,6 +980,10 @@ public final class DebugSession {
 
     private static long number(Object value, long fallback) {
         return value instanceof Number ? ((Number) value).longValue() : fallback;
+    }
+
+    private static String text(Object value) {
+        return value == null ? null : String.valueOf(value);
     }
 
     private static List<String> strings(Object value) {
