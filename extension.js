@@ -80,11 +80,257 @@ function launchSettings() {
   };
 }
 
-/** The parent environment plus the configured additions. */
-function childEnvironment(extra) {
+// ===== JDK discovery =====
+//
+// VS Code started from the macOS Dock or Spotlight inherits launchd's environment:
+// PATH=/usr/bin:/bin:/usr/sbin:/sbin and no JAVA_HOME, however well ~/.zshrc sets
+// one. gradlew then falls back to /usr/bin/java, the stub that only says "Unable to
+// locate a Java Runtime", and the adapter launch would hit the same stub. So when
+// the environment names no usable JDK, look for one -- only to fill that gap, never
+// to override a JAVA_HOME that works.
+
+/** What the last search looked at, for the error text. */
+const jdkTried = [];
+/** Why grails.debug.javaPath was rejected, when it was. */
+let jdkSettingProblem = '';
+/** The last successful search, keyed by the inputs that could change its answer. */
+let jdkCache = null;
+/** java path -> why it cannot run the adapter ('' when it can); a JVM start each. */
+const jdkChecked = new Map();
+let macStubWorks;
+
+function javaBinary(home) {
+  return path.join(home, 'bin', process.platform === 'win32' ? 'java.exe' : 'java');
+}
+
+function isExecutable(file) {
+  try {
+    fs.accessSync(file, fs.constants.X_OK);
+    return fs.statSync(file).isFile();
+  } catch (err) {
+    return false;
+  }
+}
+
+/** Version numbers from <home>/release, else the last run of digits in the path. */
+function jdkVersion(home) {
+  let text = '';
+  try {
+    const m = /^JAVA_VERSION="?([\d._]+)/m.exec(fs.readFileSync(path.join(home, 'release'), 'utf8'));
+    text = m ? m[1] : '';
+  } catch (err) {
+    // no release file
+  }
+  if (!text) {
+    const runs = home.match(/\d+(?:\.\d+)*/g);
+    text = runs ? runs[runs.length - 1] : '';
+  }
+  const parts = text.split(/[._]/).filter(Boolean).map(Number);
+  return parts[0] === 1 && parts.length > 1 ? parts.slice(1) : parts; // 1.8.0 is Java 8
+}
+
+/** Directories under `parent` whose name matches, highest Java version first. */
+function jdkDirs(parent, nameRe, suffix) {
+  let names = [];
+  try {
+    names = fs.readdirSync(parent).filter(name => nameRe.test(name));
+  } catch (err) {
+    // not there
+  }
+  return names.map(name => path.join(parent, name, suffix))
+    .map(home => ({ home, v: jdkVersion(home) }))
+    .sort((a, b) => {
+      for (let i = 0; i < Math.max(a.v.length, b.v.length); i++) {
+        if ((a.v[i] || 0) !== (b.v[i] || 0)) return (b.v[i] || 0) - (a.v[i] || 0);
+      }
+      return 0;
+    })
+    .map(entry => entry.home);
+}
+
+/** /usr/bin/java on a Mac with no JDK is a stub that fails; with one it forwards. */
+function stubWorks() {
+  if (macStubWorks === undefined) {
+    macStubWorks = spawnSync('/usr/bin/java', ['-version'], { timeout: 3000 }).status === 0;
+  }
+  return macStubWorks;
+}
+
+/** The PATH variable's actual name in an environment: Windows calls it Path. */
+function pathKey(env) {
+  return Object.keys(env).find(name => name.toUpperCase() === 'PATH') || 'PATH';
+}
+
+/** The first java a PATH value reaches that is not the macOS stub, or ''. */
+function javaOnPath(pathValue) {
+  const name = process.platform === 'win32' ? 'java.exe' : 'java';
+  for (const dir of (pathValue || '').split(path.delimiter)) {
+    const file = dir && path.join(dir, name);
+    if (file && isExecutable(file)
+        && !(process.platform === 'darwin' && file === '/usr/bin/java' && !stubWorks())) {
+      return file;
+    }
+  }
+  return '';
+}
+
+/**
+ * Why this java cannot run the adapter, or '' when it can. The adapter needs 17 or
+ * later and the jdk.jdi module, which a JRE or a jlinked runtime may not have;
+ * `--list-modules` answers both and names the version on its java.base line.
+ */
+function jdkProblem(java, home) {
+  if (!isExecutable(java)) return java + ' does not exist or is not executable';
+  if (jdkChecked.has(java)) return jdkChecked.get(java);
+  const known = home ? jdkVersion(home)[0] : undefined;
+  let why = '';
+  if (known < 17) {
+    why = 'Java ' + known + ' is older than 17';
+  } else {
+    const r = spawnSync(java, ['--list-modules'], { encoding: 'utf8', timeout: 5000 });
+    const major = r.stdout && /^java\.base@(\d+)/m.exec(r.stdout);
+    if (r.error || r.status !== 0 || !major) {
+      why = '`' + java + ' --list-modules` failed (older than Java 9?)';
+    } else if (Number(major[1]) < 17) {
+      why = 'Java ' + major[1] + ' is older than 17';
+    } else if (!/^jdk\.jdi\b/m.test(r.stdout)) {
+      why = 'it has no jdk.jdi module (a JRE or a trimmed runtime)';
+    }
+  }
+  jdkChecked.set(java, why);
+  return why;
+}
+
+/** [label, () => homes] in the order they are tried; the label says where it looks. */
+function jdkFinders(runEnvHome) {
+  const mac = process.platform === 'darwin';
+  const dirs = (parent, nameRe, suffix) => [parent, () => jdkDirs(parent, nameRe, suffix)];
+  const finders = [
+    ['JAVA_HOME in grails.run.env', () => [runEnvHome]],
+    ['JAVA_HOME', () => [process.env.JAVA_HOME]]
+  ];
+  if (mac) {
+    finders.push(['/usr/libexec/java_home -v 17+', () => {
+      const r = spawnSync('/usr/libexec/java_home', ['-v', '17+'], { encoding: 'utf8', timeout: 3000 });
+      return r.status === 0 && r.stdout ? [r.stdout.trim().split('\n')[0]] : [];
+    }]);
+  }
+  const sdkman = path.join(process.env.SDKMAN_DIR || path.join(os.homedir(), '.sdkman'),
+    'candidates', 'java');
+  finders.push([sdkman, () => [path.join(sdkman, 'current')].filter(fs.existsSync)
+    .concat(jdkDirs(sdkman, /^(?!current$)/, ''))]);
+  if (mac) {
+    const brew = 'libexec/openjdk.jdk/Contents/Home';
+    finders.push(
+      dirs('/Library/Java/JavaVirtualMachines', /./, 'Contents/Home'),
+      dirs(path.join(os.homedir(), 'Library/Java/JavaVirtualMachines'), /./, 'Contents/Home'),
+      dirs('/opt/homebrew/opt', /^openjdk/, brew),
+      dirs('/usr/local/opt', /^openjdk/, brew));
+  } else if (process.platform === 'win32') {
+    const files = process.env.ProgramFiles || 'C:\\Program Files';
+    finders.push(
+      dirs(path.join(files, 'Java'), /./, ''),
+      dirs(path.join(files, 'Eclipse Adoptium'), /./, ''),
+      dirs(path.join(files, 'Microsoft'), /^jdk-/, ''));
+  } else {
+    finders.push(dirs('/usr/lib/jvm', /./, ''));
+  }
+  finders.push(['java on PATH', () => {
+    const java = javaOnPath(process.env.PATH);
+    return java ? [path.dirname(path.dirname(fs.realpathSync(java)))] : [];
+  }]);
+  return finders;
+}
+
+function searchJdk(setting, runEnvHome) {
+  jdkTried.length = 0;
+  jdkSettingProblem = '';
+  if (setting) {
+    // A path to java, a bare command name, or (leniently) a JDK home.
+    let java = /[\\/]/.test(setting) ? setting : javaOnPath(process.env.PATH) || setting;
+    try {
+      if (fs.statSync(java).isDirectory()) java = javaBinary(java);
+    } catch (err) {
+      // reported by jdkProblem
+    }
+    const bin = path.dirname(java);
+    const home = path.basename(bin) === 'bin' ? path.dirname(bin) : '';
+    const why = jdkProblem(java, home);
+    if (!why) return { home, java, source: 'grails.debug.javaPath' };
+    jdkSettingProblem = 'grails.debug.javaPath is "' + setting + '", but ' + why + '.';
+    jdkTried.push('grails.debug.javaPath: ' + why);
+  }
+  for (const [label, find] of jdkFinders(runEnvHome)) {
+    let homes = [];
+    try {
+      homes = find().filter(Boolean);
+    } catch (err) {
+      jdkTried.push(label + ': ' + err.message);
+    }
+    for (const home of homes) {
+      const why = jdkProblem(javaBinary(home), home);
+      if (!why) return { home, java: javaBinary(home), source: label };
+      jdkTried.push(label + ' ' + home + ': ' + why);
+    }
+    if (homes.length === 0) jdkTried.push(label + ': nothing found');
+  }
+  return undefined;
+}
+
+/**
+ * A JDK that can run the debug adapter (17+, with jdk.jdi), as { home, java, source },
+ * or undefined. In order: grails.debug.javaPath, JAVA_HOME (grails.run.env, then the
+ * environment), macOS java_home, SDKMAN, the platform's usual install directories,
+ * java on PATH. The first usable one wins; within one location the highest version.
+ * A hit is remembered until one of the inputs changes; a miss is searched again,
+ * since installing a JDK is the usual reaction to it.
+ */
+function findJdk() {
+  const config = vscode.workspace.getConfiguration('grails');
+  const setting = String(config.get('debug.javaPath', '') || '').trim();
+  const runEnvHome = String((config.get('run.env', {}) || {}).JAVA_HOME || '').trim();
+  const key = [setting, runEnvHome, process.env.JAVA_HOME, process.env.PATH].join('\n');
+  if (jdkCache && jdkCache.key === key) return jdkCache.jdk;
+  const jdk = searchJdk(setting, runEnvHome);
+  jdkCache = jdk ? { key, jdk } : null;
+  return jdk;
+}
+
+/** The one error for "no JDK" (or a bad grails.debug.javaPath), with the way out. */
+function reportNoJdk() {
+  const text = (jdkSettingProblem ? jdkSettingProblem + ' ' : '')
+    + (jdkCache
+      ? 'Correct it, or clear it to use ' + (jdkCache.jdk.home || jdkCache.jdk.java) + '.'
+      : 'No usable JDK (17 or later) was found. VS Code started from the Dock or Spotlight '
+        + 'has no JAVA_HOME and no JDK on its PATH. Either set grails.debug.javaPath, or set '
+        + 'grails.run.env to { "JAVA_HOME": "<your JDK>" }, or start VS Code from a terminal '
+        + 'with `code .`.');
+  const channel = outputChannel('Grails - Debug');
+  channel.appendLine('[grails] ' + text);
+  channel.appendLine('[grails] searched:');
+  jdkTried.forEach(line => channel.appendLine('  ' + line));
+  vscode.window.showErrorMessage(text + ' The locations searched are in the "Grails - Debug" output.');
+}
+
+/**
+ * The parent environment plus the configured additions. Where that leaves no working
+ * JAVA_HOME, one is found (see findJdk) and set here, in the child's environment only.
+ * `notes` collects what to tell the user about it.
+ */
+function childEnvironment(extra, notes) {
   const env = Object.assign({}, process.env);
   for (const key of Object.keys(extra)) {
     env[key] = String(extra[key]);
+  }
+  if (!(env.JAVA_HOME && isExecutable(javaBinary(env.JAVA_HOME)))) {
+    const jdk = findJdk();
+    if (jdk) {
+      if (notes && env.JAVA_HOME) notes.push('JAVA_HOME=' + env.JAVA_HOME + ' has no bin/java');
+      if (jdk.home) env.JAVA_HOME = jdk.home;
+      const key = pathKey(env);
+      env[key] = path.dirname(jdk.java) + (env[key] ? path.delimiter + env[key] : '');
+      if (notes) notes.push('using JDK ' + (jdk.home || jdk.java) + ' (' + jdk.source + ')');
+    }
   }
   return env;
 }
@@ -302,7 +548,8 @@ function spawnBuild(options) {
   const args = options.args || [];
   const commandLine = options.commandLine || '';
   const settings = launchSettings();
-  const env = childEnvironment(settings.env);
+  const notes = [];
+  const env = childEnvironment(Object.assign({}, settings.env, options.env), notes);
   const wrapper = options.wrapper || gradleWrapperPath(options.cwd);
 
   // Name the file that is missing rather than letting the shell report an unknown
@@ -315,10 +562,20 @@ function spawnBuild(options) {
     return null;
   }
 
+  // No JDK in the environment and none to be found: gradlew would only print the
+  // macOS "Unable to locate a Java Runtime" stub text. A configured command line is
+  // left alone -- the script it runs may well export JAVA_HOME itself.
+  if (!commandLine && !(env.JAVA_HOME && isExecutable(javaBinary(env.JAVA_HOME)))
+      && !javaOnPath(env[pathKey(env)])) {
+    reportNoJdk();
+    return null;
+  }
+
   const channel = outputChannel(options.channelName);
   activeChannelName = options.channelName;
   channel.show(true);
   channel.appendLine('> ' + (commandLine || wrapper + ' ' + args.join(' ')));
+  notes.forEach(note => channel.appendLine('  ' + note));
   const injected = Object.keys(settings.env);
   if (injected.length > 0) {
     channel.appendLine('  (with grails.run.env: ' + injected.join(', ') + ')');
@@ -476,14 +733,15 @@ function debugAdapterType() {
  * necessarily the one VSCode itself runs on.
  */
 function javaExecutable() {
-  const configured = vscode.workspace.getConfiguration('grails').get('debug.javaPath', '');
-  if (configured) return configured;
-  const home = process.env.JAVA_HOME;
-  if (home) {
-    const candidate = path.join(home, 'bin', process.platform === 'win32' ? 'java.exe' : 'java');
-    if (fs.existsSync(candidate)) return candidate;
+  const jdk = findJdk();
+  if (jdk && !jdkSettingProblem) { // a rejected grails.debug.javaPath is not quietly replaced
+    outputChannel('Grails - Debug').appendLine(
+      '[grails] using JDK ' + (jdk.home || jdk.java) + ' (' + jdk.source + ') for the debug adapter');
+    return jdk.java;
   }
-  return 'java';
+  if (!jdkSettingProblem && javaOnPath(process.env.PATH)) return 'java';
+  reportNoJdk();
+  return undefined;
 }
 
 /**
@@ -518,8 +776,11 @@ function makeAdapterFactory(context) {
           `The Groovy debug adapter is missing (${jar}). Run "npm run build:server".`);
         return undefined;
       }
-      return new vscode.DebugAdapterExecutable(
-        javaExecutable(), ['--add-modules', 'jdk.jdi', '-jar', jar]);
+      const java = javaExecutable();
+      if (!java) {
+        return undefined; // javaExecutable already said why
+      }
+      return new vscode.DebugAdapterExecutable(java, ['--add-modules', 'jdk.jdi', '-jar', jar]);
     }
   };
 }

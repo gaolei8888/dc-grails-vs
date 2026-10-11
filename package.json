@@ -169,7 +169,7 @@
         "grails.debug.javaPath": {
           "type": "string",
           "default": "",
-          "description": "java executable used to run the Groovy debug adapter. Defaults to JAVA_HOME, then whatever is on PATH. Java 17 or later."
+          "description": "java executable used to run the Groovy debug adapter (Java 17 or later, with the jdk.jdi module). When empty, a JDK is looked for: JAVA_HOME (also in grails.run.env), macOS java_home, SDKMAN, the usual install directories, then PATH. The same search supplies JAVA_HOME to the app's build when VS Code was started without one (from the Dock, say)."
         }
       }
     },
