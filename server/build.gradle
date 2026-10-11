@@ -39,3 +39,15 @@ tasks.register('installJar', Copy) {
     into rootProject.file('../dist')
 }
 tasks.named('build') { finalizedBy 'installJar' }
+
+// Dependency-free tests: plain main() classes under src/test/java, no framework to
+// download. `check` (and so `build`) runs them; a failed check exits non-zero.
+// The end-to-end half spawns a JDK-only target on an ephemeral JDWP port.
+tasks.register('verifyProtocol', JavaExec) {
+    group = 'verification'
+    description = 'Runs the unit and loopback end-to-end checks.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.groovydap.VerifyProtocol'
+    jvmArgs '--add-modules', 'jdk.jdi'
+}
+tasks.named('check') { dependsOn 'verifyProtocol' }
