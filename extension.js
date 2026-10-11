@@ -978,13 +978,25 @@ function looksLikeGrailsProject(folder) {
   return false;
 }
 
+/**
+ * Whether the open workspace holds a Grails project at all.
+ *
+ * The status bar is gated on this: an empty or unrelated workspace has nothing
+ * for Run/Debug to start, and the buttons would only produce an error message
+ * on click. Unlike the sidebar view, "no folder open" counts as not Grails --
+ * there is no project to run, so there is nothing to advertise.
+ */
+let isGrailsWorkspace = false;
+
 function refreshGrailsContext() {
   const folders = vscode.workspace.workspaceFolders;
-  // No folder open at all: show it rather than leave the user wondering where the
-  // extension went.
-  const isGrails = !folders || folders.length === 0
-    || folders.some(folder => looksLikeGrailsProject(folder.uri.fsPath));
+  isGrailsWorkspace = !!folders && folders.length > 0
+    && folders.some(folder => looksLikeGrailsProject(folder.uri.fsPath));
+  // No folder open at all: show the view rather than leave the user wondering
+  // where the extension went.
+  const isGrails = !folders || folders.length === 0 || isGrailsWorkspace;
   vscode.commands.executeCommand('setContext', 'grails:isGrailsProject', isGrails);
+  refreshStatusBar();
 }
 
 // Status bar. Run/Debug/Stop are stateful -- whether the app is up is the thing
@@ -1033,6 +1045,15 @@ function refreshStatusBar() {
   }
   const debugging = !!gradleDebugProcess;
   const busy = !!gradleRunProcess || debugging;
+  // Not a Grails workspace: no item at all. Still honoured while busy only in
+  // the sense that a run cannot have started from here in the first place.
+  if (!isGrailsWorkspace && !busy) {
+    statusRun.hide();
+    statusDebug.hide();
+    statusState.hide();
+    statusStop.hide();
+    return;
+  }
   if (!busy) {
     grailsAppUrl = null;
     statusState.hide();
