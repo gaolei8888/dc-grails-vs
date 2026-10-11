@@ -25,6 +25,7 @@ import com.sun.jdi.request.BreakpointRequest;
 import com.sun.jdi.request.EventRequest;
 import com.sun.jdi.request.ExceptionRequest;
 import com.sun.jdi.request.StepRequest;
+import org.groovydap.dap.DapChannel;
 import org.groovydap.dap.DapTransport;
 import org.groovydap.jdi.BreakpointBinder;
 import org.groovydap.jdi.GrailsWebScope;
@@ -62,7 +63,7 @@ public final class DebugSession {
      * while a closure call arrives through {@code NativeMethodAccessorImpl},
      * {@code CachedMethod.invoke} and {@code ClosureMetaClass.invokeMethod}.
      */
-    private static final List<String> DEFAULT_STEP_EXCLUDES = List.of(
+    static final List<String> DEFAULT_STEP_EXCLUDES = List.of(
         // The JDK. Step into is otherwise unusable in Groovy: every value that
         // crosses a call site is boxed, so the first stepIn on a line of ordinary
         // Groovy lands in Integer.valueOf, and the next in String.equals.
@@ -99,7 +100,7 @@ public final class DebugSession {
     /** Guard against stepping forever through code the user cannot see. */
     private static final int MAX_AUTOMATIC_RESTEPS = 500;
 
-    private final DapTransport transport;
+    private final DapChannel transport;
 
     private VirtualMachine vm;
     private BreakpointBinder binder;
@@ -126,7 +127,17 @@ public final class DebugSession {
     private final Map<Long, Integer> restepBudget = new ConcurrentHashMap<>();
 
     public DebugSession(InputStream in, OutputStream out) {
-        this.transport = new DapTransport(in, out);
+        this(new DapTransport(in, out));
+    }
+
+    public DebugSession(DapChannel channel) {
+        this.transport = channel;
+    }
+
+    /** Ends the request loop and releases the target; safe from another thread. */
+    public void shutdown() {
+        running = false;
+        detach();
     }
 
     public void run() throws IOException {
@@ -828,7 +839,7 @@ public final class DebugSession {
         }
     }
 
-    private void detach() {
+    private synchronized void detach() {
         if (vm == null) {
             return;
         }

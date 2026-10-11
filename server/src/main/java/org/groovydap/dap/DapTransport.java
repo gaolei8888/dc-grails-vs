@@ -5,7 +5,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -20,7 +19,7 @@ import java.util.Map;
  * request loop answering requests, and the JDI event thread pushing {@code
  * stopped} / {@code thread} events.
  */
-public final class DapTransport {
+public final class DapTransport implements DapChannel {
 
     private final InputStream in;
     private final OutputStream out;
@@ -33,6 +32,7 @@ public final class DapTransport {
     }
 
     /** Reads one message, or returns null once the client closes the stream. */
+    @Override
     public Map<String, Object> receive() throws IOException {
         int contentLength = -1;
         while (true) {
@@ -82,38 +82,7 @@ public final class DapTransport {
         }
     }
 
-    public void sendResponse(Map<String, Object> request, Map<String, Object> body) {
-        Map<String, Object> msg = new LinkedHashMap<>();
-        msg.put("type", "response");
-        msg.put("request_seq", request.get("seq"));
-        msg.put("success", Boolean.TRUE);
-        msg.put("command", request.get("command"));
-        if (body != null) {
-            msg.put("body", body);
-        }
-        send(msg);
-    }
-
-    public void sendError(Map<String, Object> request, String message) {
-        Map<String, Object> msg = new LinkedHashMap<>();
-        msg.put("type", "response");
-        msg.put("request_seq", request.get("seq"));
-        msg.put("success", Boolean.FALSE);
-        msg.put("command", request.get("command"));
-        msg.put("message", message);
-        send(msg);
-    }
-
-    public void sendEvent(String event, Map<String, Object> body) {
-        Map<String, Object> msg = new LinkedHashMap<>();
-        msg.put("type", "event");
-        msg.put("event", event);
-        if (body != null) {
-            msg.put("body", body);
-        }
-        send(msg);
-    }
-
+    @Override
     public void send(Map<String, Object> message) {
         synchronized (writeLock) {
             message.put("seq", nextSeq++);
