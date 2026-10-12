@@ -1,5 +1,46 @@
 # Change Log
 
+## 0.2.0 (pre-release) — 2026-10-12
+
+### Added
+
+- **A built-in Groovy debug adapter** (debug type `groovy-dap`). Breakpoints in
+  `.groovy` files bind, closures included, and Locals / Watch show the values of
+  variables a closure captured instead of `groovy.lang.Reference`. It needs a full
+  JDK 17 or newer that includes `jdk.jdi`.
+- **Read-only variable evaluation** in Watch, hover and the Debug Console: variable
+  paths only (`a.b.c`, `list[0]`, `map['k']`); nothing is run in the application.
+- **Changing simple variable values**: literals only, for primitives and `String`.
+- **A `Grails: Debug App` launch configuration**, so the Run and Debug button starts
+  the app and attaches.
+- **JDK discovery** when `JAVA_HOME` is missing: the extension searches for one
+  instead of hitting the macOS `java` stub.
+- Tested against Grails 7.2.3 and 8.0.0 (Grails 8 needs Java 21 or newer).
+- Clearer errors when the adapter build fails.
+
+### Changed
+
+- The Grails status bar items appear only in a Grails workspace.
+
+### Fixed
+
+- Activation no longer fails when another extension already owns the debug type
+  `groovy`; the debugger is now registered as `groovy-dap`. `launch.json` must use
+  `"type": "groovy-dap"`.
+- Step Into on a cold JVM no longer skips the closure body.
+- The variables pane no longer shows `<error>` when stopping at the start of a
+  closure; a variable that cannot be read yet is left out.
+- Other threads no longer stay marked PAUSED after stepping.
+- The `Grails: Debug App` entry is no longer offered twice.
+
+### Known limitations
+
+- Stop while paused at a breakpoint only ends the Gradle client; the application
+  and the adapter stay until you Continue.
+- Hot reload needs a recompile; saving a source file alone changes nothing.
+- Step Into on a line with nothing to enter does nothing.
+- Not yet verified: F5, the F10/F11 keys, hover, and Windows / Linux.
+
 ## 0.1.7 — pre-release
 
 ### Added

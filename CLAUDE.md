@@ -6,7 +6,7 @@
 
 `dc-grails-vs` —— 一个 VSCode 扩展,给 **Grails/Groovy 项目**提供命令面板集成。
 
-- `package.json`:`name: "grails-gradle-extension"`,`publisher: "gaolei8888"`,version 0.1.7
+- `package.json`:`name: "grails-gradle-extension"`,`publisher: "gaolei8888"`,version 0.2.0(pre-release)
 - `extension.js`:1831 行 JS(2026-10-11 数;此前写 1347),注册 **202 条命令**(该数未重数;`package.json` 现声明 201 条):
   - 7 条显式命令 —— `grails.runApp` / `stopApp` / `debug` / `debugTests` / `stopDebug` /
     `openApp` / `showOutput`
@@ -458,14 +458,18 @@ npm run build:server
 npx --yes @vscode/vsce package --no-dependencies    # --no-dependencies 必须:仓库用 pnpm,
                                                     # 默认的生产依赖核对会炸
 "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" \
-  --install-extension grails-gradle-extension-0.1.7.vsix --force
+  --install-extension grails-gradle-extension-0.2.0.vsix --force
 ```
 
 装完必须 `Cmd+Shift+P` → `Developer: Reload Window`,否则跑的还是旧 extension;已经写进
 output channel 的旧文本也不会回头重写,要重新 Run 一次才看得到新行为。
 
 发布到 Marketplace 还没做,缺 PAT:`npx @vscode/vsce login gaolei8888`(交互式,**别把 token
-放进 argv**),再 `npx @vscode/vsce publish patch --no-dependencies`。PAT 的 scope 要
+放进 argv**),再发布。**已定的计划(2026-10-12)**:首发 `0.2.0` 作为 Marketplace **预发布版**:
+`npx @vscode/vsce publish --pre-release --no-dependencies`(版本号已写在 `package.json`,
+所以**不要**用 `publish patch`,它会把版本顶到 0.2.1);之后再以正式版发 `0.2.1`
+(预发布与正式版的版本号必须不同;VS Code 只支持 major.minor.patch,不支持 semver 后缀;
+奇偶约定只是建议,有意不遵循)。PAT 的 scope 要
 Marketplace → Manage,organization 必须选 All accessible organizations,否则 401。
 
 `server/` 自带 gradle wrapper(8.14.3),用 JDK 17 构建。编译和运行都需要

@@ -15,7 +15,9 @@
 | **Issues** | [github.com/gaolei8888/dc-grails-vs/issues](https://github.com/gaolei8888/dc-grails-vs/issues) |
 | **Changelog** | [CHANGELOG.md](https://github.com/gaolei8888/dc-grails-vs/blob/main/CHANGELOG.md) |
 
-Installing from the command line — the `--pre-release` is needed while this is one:
+Version 0.2.0 is a pre-release. To install it, open the Marketplace page above
+and choose **Switch to Pre-Release Version**, or from the command line (the
+`--pre-release` is needed while this is one):
 
 ```
 code --install-extension gaolei8888.grails-gradle-extension --pre-release
