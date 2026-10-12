@@ -564,14 +564,22 @@ STOP  index:9  bci 104 depth 56       ← 第 9 行的「中段」
 (第 9 行的中段 —— 调用刚返回、`astore_3` 还没执行;`javap` 显示第 9 行覆盖 bci 87–114,
 第 10 行从 115 开始)。`index()` 的行号表干净且单路径,不是双代码路径的问题。
 
-**结论**:在**一行的中段**创建的 `STEP_OVER` 请求会冲出整个方法体,而在**行首**创建的正常。
-从被调用方法返回时落在行中段是所有调试器的常态,所以这不是我们的用法问题。
+**~~结论:在一行的中段创建的 `STEP_OVER` 会冲出整个方法体~~ —— 2026-08-31 已证伪。**
+见 `docs/experiments/2026-08-31-step-over-midline/`(harness 与逐组数据都在里面):隔离实验中
+行中段发起的 `STEP_OVER` 在 6 种形状下全部正确走到下一行 —— 纯 Java、Groovy 4 indy callsite、
+带整张 exclusion filter、反射调用方(native 帧)、深栈、以及中间夹一个无行号表的帧并照抄
+`onStepDone` 的 restep 链。**行中段本身不是原因;真实原因仍未知,下面两条 bci 证据仍然有效,
+但由它们推出的这条结论不成立。**
 
 **并且第 10、11 行确实执行了** —— 那次请求的 HTTP 响应是完整的
 (`plain=16`,`render` 也跑了)。所以不是异常展开,是**单步压根没为这两行产生事件**,
 直到帧弹出才报了一次。
 
-#### 两个已被证伪的假设(别再走这两条路)
+#### 三个已被证伪的假设(别再走这三条路)
+
+0. **~~行中段的 bci~~** —— 2026-08-31 用独立 harness 证伪,顺带排除 Groovy indy callsite、
+   反射/native 调用方、深栈(33 帧)、无行号中间帧、restep 链本身。见
+   `docs/experiments/2026-08-31-step-over-midline/README.md`。
 
 1. **~~JDI class exclusion filter 导致的~~** —— bci 104 之后紧接着就是
    `ScriptBytecodeAdapter.castToType`(落在 `org.codehaus.groovy.*` 排除项里),看着很像。
@@ -586,8 +594,29 @@ STOP  index:9  bci 104 depth 56       ← 第 9 行的「中段」
 十几个停顿才回到调用方。)
 
 **影响**:step over 走到方法末行、返回调用方之后,再按一次会跳过调用方该行之后的剩余代码。
-**未修**。还没试过的方向:用 `STEP_MIN`(字节码粒度)把位置从行中段推到行首再发 `STEP_OVER`;
-或者干脆不用 JDI 的 step,自己在目标行下临时断点(IntelliJ 在某些场景下就是这么做的)。
+**未修**。~~用 `STEP_MIN` 把位置从行中段推到行首~~ —— 这条方向随「行中段」假设一起作废。
+
+**2026-09-01:回到真实 Grails 靶子做了,仍然复现不出来。** 新建空白 Grails 7.2.3 rest_api
+(`~/Documents/work/dc/dc-grails-vs-target/dbgtarget`),类级 `@Transactional` service + controller
+第 10 行调它、第 11、12 行在后面,用 `docs/experiments/2026-08-31-step-over-midline/dapclient.js`
+(DAP over stdio)驱动 `bootRun --debug-jvm`:
+
+| 跑法 | adapter | JVM | 结果 |
+|---|---|---|---|
+| 断点 `$tt__` 方法末行,连续 next | HEAD | 21.0.10 | `index:10 bci 103`(中段)→ 11 → 12 正确 |
+| 同上 | HEAD | 25.0.3 | 正确 |
+| 同上 | **`15bf219`**(记录此缺陷那版) | 25.0.3 | **也正确**;唯一差别是方法结束后旧版会停进 `ReflectionInvoker:215` 之类框架帧(`d793d59` 之后不再停) |
+| 断点在闭包体内,连续 next | HEAD | 25.0.3 | 正确 |
+
+`javap -c -l` 确认第 11、12 行的字节码**就在 `index` 里**(`line 11` 还占了 115 与 164 两段),
+所以「那两行不在这个方法里」这个猜测对该形状不成立。自动续步链与本节记录的完全同形
+(`closure1.doCall line -1` → `transactionalMethod line -1` → `transactionalMethod$0.call line -1`
+→ `index:10` 行中段),就是最后没有冲出方法体。
+
+**当前判定:成因不明、无法复现**(9 种形状:6 个合成 + 3 个真实 Grails;两个 adapter 版本;
+JDK 21 与 25)。原始观察缺了当时靶子的形状与操作序列,没法回溯。**再遇到时**必须同时留下
+`trace: true` 的完整 `step event:` 序列 + 该方法的 `javap -c -l` LineNumberTable —— 只有这两样
+对齐才能区分「跳过了行」与「该方法确实结束了」。
 
 #### step filter:两层,而不是一张黑名单
 
