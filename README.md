@@ -1,10 +1,12 @@
 # DC-Grails-VS
 
 > **Pre-release.** The debugger works: breakpoints bind in .groovy files, closures
-> included, and full sessions have been driven end to end against a Grails 7.2.3
-> application. But it has been exercised on one application, on Windows, by one
-> person. Expect to find things. Known gaps are listed at the bottom; the issue
-> tracker is [on GitHub](https://github.com/gaolei8888/dc-grails-vs/issues).
+> included, and scripted sessions have been driven end to end against Grails 7.2.3
+> and 8.0.0. The main flows have also been seen working in a real VS Code window
+> (see Requirements for what has not). But it has been exercised on two
+> applications, by one person. Expect to find things. Known gaps are listed at the
+> bottom; the issue tracker is
+> [on GitHub](https://github.com/gaolei8888/dc-grails-vs/issues).
 
 | | |
 |---|---|
@@ -70,13 +72,29 @@ configuration:
 
 ```json
 {
-  "type": "groovy",
+  "type": "groovy-dap",
   "request": "attach",
   "name": "Attach to Grails",
   "hostName": "localhost",
   "port": 5005
 }
 ```
+
+The type is `groovy-dap`, not `groovy`: another Groovy extension may already own
+`groovy`, and VS Code allows one debug adapter per type. If you have Code Groovy
+installed, its own "Groovy / Grails..." entry in the Run and Debug dropdown is
+Code Groovy's, not this extension's.
+
+### Launch configuration (new, not yet verified in a real window)
+
+A **Grails: Debug App** launch configuration ("Grails (Groovy debugger)" in the
+Run and Debug dropdown) starts `./gradlew bootRun --debug-jvm` and attaches; F5
+with no `launch.json` in a Grails workspace does the same. It attaches instead of
+starting a second app if one is already listening, and ending the session stops an
+app it started. Launch attributes: `projectDir`, `args`, `env`, `startTimeout`,
+`sourcePaths`. The debug port is not configurable, because Gradle hard-codes 5005.
+**This has not been checked in a real VS Code window yet**; use Grails: Debug App
+from the command palette or status bar, which has.
 
 ## Debugging tests
 
@@ -97,7 +115,10 @@ Create and Scaffold are not the same thing. `create-controller` writes an empty
 controller; `generate-controller` scaffolds one, actions and all, from a domain
 class that already exists — which is why every entry under Scaffold asks for one.
 
-Run, Debug and Stop are also in the status bar, in green and red. While a build is
+Run, Debug and Stop are also in the status bar (shown only in a Grails workspace:
+a top-level `grails-app` folder, or a `gradle.properties` / `build.gradle` /
+`build.gradle.kts` that mentions "grails"; a Grails app in a subfolder is not
+detected). While a build is
 running the pair is replaced by a spinner that turns into a check and the address
 once the application reports that it is serving; clicking it opens the app, or
 shows the build output while it is still starting.
@@ -108,8 +129,23 @@ The application's log goes to an output channel — **Grails - Normal** for Run 
 ## Requirements
 
 - A Grails project with a Gradle wrapper (`gradlew`) in the folder you open.
-- **Java 17 or newer** on `JAVA_HOME` or `PATH`. The debug adapter runs on it; the
-  JDK your application runs on can be a different one.
+- **Grails 7.x or 8.x.** Checked against 7.2.3 and 8.0.0 by scripted debug sessions.
+  In a real VS Code window (2026-10-11) the status bar buttons, Debug App,
+  breakpoint hits, Locals and Watch values, evaluating a variable path in Watch,
+  changing a value, and breakpoint rebinding after a class reload were seen working.
+  **Not yet seen in a real window:** the launch configuration, hover, F10/F11 feel,
+  JDK discovery from a Dock-launched window, and Windows and Linux paths. A Grails 8
+  application itself needs Java 21 or newer.
+- **A full JDK, 17 or newer** (not a JRE: the adapter uses the `jdk.jdi` module).
+  The JDK your application runs on can be a different one.
+- **JDK discovery.** When `JAVA_HOME` is missing the extension looks for one, in
+  this order: `grails.debug.javaPath`, `JAVA_HOME` from `grails.run.env` or the
+  environment, macOS `java_home`, SDKMAN, the usual install folders (Homebrew,
+  Linux, Windows), then `java` on `PATH` (the macOS `/usr/bin/java` stub is
+  skipped). If none is found you get one error naming the ways out. A VS Code
+  started from the Dock has no `JAVA_HOME`; set `grails.run.env`
+  (`{"JAVA_HOME": "..."}`) or `grails.debug.javaPath`, or start VS Code from a
+  terminal with `code .`. Discovery from a Dock-launched window is not yet verified.
 - For `grails.debug.adapter: "java"` only: the
   [Debugger for Java](https://marketplace.visualstudio.com/items?itemName=vscjava.vscode-java-debug)
   extension.
@@ -123,7 +159,7 @@ The application's log goes to an output channel — **Grails - Normal** for Run 
 | `grails.run.env` | `{}` | Environment variables to add for the app process. |
 | `grails.run.args` | `[]` | Extra arguments for `bootRun`. |
 | `grails.debug.adapter` | `groovy` | `groovy` uses the adapter in this extension. `java` hands the session to vscode-java-debug, which cannot bind a breakpoint in a `.groovy` file. |
-| `grails.debug.javaPath` | `""` | The `java` used to run the debug adapter. Defaults to `JAVA_HOME`, then `PATH`. |
+| `grails.debug.javaPath` | `""` | The `java` used to run the debug adapter. Defaults to the discovery order above. |
 
 Attach configurations also take `sourcePaths` (roots for resolving stack frames,
 defaulted from the project layout), `stepFilters` (packages to step over),
@@ -145,17 +181,32 @@ which is indistinguishable from a hang.
 
 ## Known issues
 
-- **Step over from the middle of a line overshoots.** After a call returns you are
-  partway through the line that made it; a step over issued there runs to the end
-  of the method instead of moving to the next line. Located, not yet fixed.
+- **Step over once skipped code.** It was reported that after stepping over the last
+  line of a service method back into the controller, a further step over skipped
+  the remaining code. It could not be reproduced afterwards (several target
+  shapes, JDK 21 and 25, Grails 7 and 8), and the cause is unknown.
 - **Step into does not enter a `@Transactional` method.** Its entry runs through
   the transaction template, and stepping climbs back out to the calling line. Put a
   breakpoint in the method instead.
-- **Conditional breakpoints, watch expressions and hover evaluation are not
-  implemented.** They need Groovy expressions compiled and evaluated inside the
-  target VM.
-- **Attach only.** There is no launch configuration; the app is started by the
-  Gradle wrapper and the adapter attaches to it.
+- **Watch, hover and the Debug Console evaluate variable paths only** (`a.b.c`,
+  `list[0]`, `map['k']`); nothing is run in the application. **Conditional
+  breakpoints and general expressions are not implemented.** They need Groovy
+  expressions compiled and evaluated inside the target VM.
+- **Simple variable values can be changed** in the Variables and Watch panels:
+  literals only, for primitives and `String` (not captured closure variables,
+  boxed values, objects or collections). Changing a value was seen working in a
+  real VS Code window; which request VS Code sends for it is not known.
+- **Hot reload needs a recompile.** Saving a source file alone does not change the
+  running app. Once the class was reloaded (what triggers that was not
+  established), breakpoints rebound to the new class and showed the new value; seen
+  in one scenario in a real window.
+- **Stop while paused:** if the JVM is stopped at a breakpoint, Stop only ends the
+  Gradle client; the application and the adapter stay until you Continue.
+- Stopping kills any `java` process listening on the debug port (5005), which
+  Gradle hard-codes.
+- Code Groovy's own classpath script may print `Cannot mutate the state of
+  configuration ':compileOnly'` in its output channel on Grails projects; it is
+  harmless and not from this extension.
 - GSP files are not mapped.
 
 ## Star it
