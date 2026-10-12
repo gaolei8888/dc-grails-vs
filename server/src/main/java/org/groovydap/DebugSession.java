@@ -471,14 +471,8 @@ public final class DebugSession {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("allThreadsContinued", Boolean.TRUE);
         transport.sendResponse(request, body);
+        sendContinued((int) number(args.get("threadId"), 0));
         resumeTarget();
-
-        // The event needs the thread the client asked about; the response does not
-        // carry one, so it cannot be reused here.
-        Map<String, Object> event = new LinkedHashMap<>();
-        event.put("threadId", (int) number(args.get("threadId"), 0));
-        event.put("allThreadsContinued", Boolean.TRUE);
-        transport.sendEvent("continued", event);
     }
 
     private void onStep(Map<String, Object> request, int depth) {
@@ -494,7 +488,22 @@ public final class DebugSession {
         requestStep(thread, depth);
 
         transport.sendResponse(request, null);
+        sendContinued(idOf(thread));
         resumeTarget();
+    }
+
+    /**
+     * Sent before the VM is resumed, never after: a breakpoint can be hit the moment
+     * the VM runs, and a continued event arriving behind that stopped event would
+     * make the client clear every thread's stopped state. Step responses carry no
+     * "allThreadsContinued", so without this the client clears only the stepping thread
+     * and the others stay labelled paused after the VM is running again.
+     */
+    private void sendContinued(int threadId) {
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("threadId", threadId);
+        event.put("allThreadsContinued", Boolean.TRUE);
+        transport.sendEvent("continued", event);
     }
 
     private void requestStep(ThreadReference thread, int depth) {

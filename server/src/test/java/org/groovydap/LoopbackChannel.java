@@ -26,6 +26,7 @@ final class LoopbackChannel implements DapChannel {
     private final AtomicInteger serverSeq = new AtomicInteger(1);
     private final AtomicInteger clientSeq = new AtomicInteger(1);
     private final java.util.List<Map<String, Object>> events = new java.util.ArrayList<>();
+    private final java.util.List<Map<String, Object>> arrivals = new java.util.ArrayList<>();
 
     // ---- server side
 
@@ -95,6 +96,29 @@ final class LoopbackChannel implements DapChannel {
         }
     }
 
+    /** Every message the client has read so far, in arrival order; pair with {@link #since}. */
+    int mark() {
+        return arrivals.size();
+    }
+
+    /** "response:next" / "event:stopped" for each message read after the mark. */
+    java.util.List<String> since(int mark) {
+        java.util.List<String> names = new java.util.ArrayList<>();
+        for (Map<String, Object> m : arrivals.subList(mark, arrivals.size())) {
+            names.add(m.get("type") + ":" + ("response".equals(m.get("type")) ? m.get("command") : m.get("event")));
+        }
+        return names;
+    }
+
+    Map<String, Object> lastEvent(String name) {
+        for (int i = arrivals.size() - 1; i >= 0; i--) {
+            if (name.equals(arrivals.get(i).get("event"))) {
+                return arrivals.get(i);
+            }
+        }
+        return null;
+    }
+
     boolean sawEvent(String name) {
         for (Map<String, Object> e : events) {
             if (name.equals(e.get("event"))) {
@@ -114,6 +138,7 @@ final class LoopbackChannel implements DapChannel {
         if (m == null) {
             throw new AssertionError("timed out waiting for the adapter; pending events: " + events);
         }
+        arrivals.add(m);
         return m;
     }
 }

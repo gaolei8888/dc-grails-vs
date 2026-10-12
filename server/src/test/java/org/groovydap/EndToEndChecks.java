@@ -282,6 +282,13 @@ final class EndToEndChecks {
         }
     }
 
+    private static void assertAllThreadsContinued(Session s, int threadId) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> b = (Map<String, Object>) s.channel.lastEvent("continued").get("body");
+        eq(Boolean.TRUE, b.get("allThreadsContinued"), "allThreadsContinued");
+        eq(threadId, intOf(b.get("threadId")), "continued threadId");
+    }
+
     /** Evaluate at the breakpoint: shapes, paths, and the read-only refusals. */
     private static void checkEvaluate(Session s, Map<String, Object> frame) throws Exception {
         Map<String, Object> x = body(s.evaluate(frame, "x", "watch"));
@@ -399,6 +406,37 @@ final class EndToEndChecks {
                         eq(0, target.process.exitValue(), "target exit code");
                         that(target.output.stream().anyMatch(l -> l.equals("target done 43")),
                                 "target output: " + target.output);
+                    } finally {
+                        s.channel.closeClient();
+                    }
+                }
+            });
+
+            test("e2e: next and continue each send one continued{allThreadsContinued} before the next stop", () -> {
+                try (Target target = new Target(dir)) {
+                    Session s = new Session();
+                    try {
+                        int threadId = s.attachAndHitBreakpoint(target, dir);
+
+                        int mark = s.channel.mark();
+                        body(s.channel.request("next", map("threadId", threadId)));
+                        s.channel.awaitEvent("stopped", 20_000);
+                        eq(java.util.Arrays.asList("response:next", "event:continued", "event:stopped"),
+                                s.channel.since(mark), "message order around next");
+                        assertAllThreadsContinued(s, threadId);
+
+                        mark = s.channel.mark();
+                        body(s.channel.request("continue", map("threadId", threadId)));
+                        s.channel.awaitEvent("terminated", 20_000);
+                        java.util.List<String> seen = s.channel.since(mark);
+                        eq(1, java.util.Collections.frequency(seen, "event:continued"), "continued count: " + seen);
+                        that(seen.indexOf("response:continue") < seen.indexOf("event:continued")
+                                && seen.indexOf("event:continued") < seen.indexOf("event:terminated"),
+                                "continue order: " + seen);
+                        assertAllThreadsContinued(s, threadId);
+
+                        body(s.channel.request("disconnect", null));
+                        s.joinCleanly();
                     } finally {
                         s.channel.closeClient();
                     }
