@@ -1005,7 +1005,11 @@ const groovyConfigurationProvider = {
  * initialConfigurations in a generated launch.json.
  */
 const groovyDynamicConfigurationProvider = {
-  provideDebugConfigurations() {
+  provideDebugConfigurations(folder) {
+    // VS Code asks once per launch source: every workspace folder, plus the
+    // user-settings / .code-workspace launch with folder === undefined. The
+    // folderless one has no project root, so it could not start anything.
+    if (!folder) return [];
     return [{ type: DEBUG_TYPE, request: 'launch', name: 'Grails: Debug App' }];
   }
 };
