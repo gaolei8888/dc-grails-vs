@@ -1,9 +1,9 @@
 # Change Log
 
-## 0.2.0 (pre-release) — 2026-10-12
+## 0.1.31 (pre-release) — 2026-10-12
 
 This release merges the 0.1.14 - 0.1.30 line (conditional breakpoints, logpoints,
-data breakpoints, GSP, QA, the exception explainer; entries below) with the
+data breakpoints, GSP, the exception explainer; entries below) with the
 built-in debug adapter work done in parallel.
 
 ### Breaking
@@ -24,7 +24,7 @@ built-in debug adapter work done in parallel.
   instead of hitting the macOS `java` stub.
 - Clearer errors when the adapter build fails.
 - Features carried in from the 0.1.14 - 0.1.30 line: conditional breakpoints,
-  logpoints and hit counts, data breakpoints, GSP debugging, the QA panel, and the
+  logpoints and hit counts, data breakpoints, GSP debugging, and the
   exception explainer (see the entries below). The merge itself did not exercise
   them in a real VS Code window.
 
@@ -35,7 +35,7 @@ built-in debug adapter work done in parallel.
   `map['k']`) without running code in the application. Operator characters inside
   a quoted key (`params['user-id']`) are no longer mistaken for operators.
 - Step Over and Step Into are built from breakpoints (the 0.1.30 line's design), which
-  changes what earlier 0.2.0 builds did, measured on Grails 7.2.3 and 8.0.0:
+  changes what earlier local builds of this line did, measured on Grails 7.2.3 and 8.0.0:
   after a method returns, stepping stops on the next line (not mid-line); Step Into
   now enters `@Transactional` methods; Step Into on a `.each` line stops only on the
   first iteration (earlier builds stopped on i=1,2,3; 5 stops per request instead
@@ -59,6 +59,15 @@ built-in debug adapter work done in parallel.
 - Other threads no longer stay marked PAUSED after stepping: the `continued` event
   is now sent before the program is resumed, for continue and for every step.
 - The `Grails: Debug App` entry is no longer offered twice.
+
+### Removed
+
+- The Run QA panel and everything built for it in 0.1.19 - 0.1.30 is removed from
+  this version: the panel itself, its browser (Playwright) cases, AI browser-case
+  drafting, the generated Domain/H2 specs, and the test-identity bypass. The
+  `Grails: Run QA` command no longer exists. Existing `.grails-qa/` folders in your
+  projects are left untouched; delete them by hand if you do not need them. The
+  0.1.19 - 0.1.30 entries below stay as history.
 
 ### Known limitations
 

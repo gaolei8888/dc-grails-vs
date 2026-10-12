@@ -4,7 +4,6 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { registerExceptionExplainer } = require('./lib/explain-exception');
-const { registerQaPanel } = require('./lib/qa-panel');
 
 // Dedicated processes for long‑running tasks (runApp and debug)
 let gradleRunProcess = null;
@@ -1094,7 +1093,6 @@ const COMMAND_TREE = [
   {
     label: 'Run', icon: 'play-circle', items: [
       { label: 'Run App', command: 'grails.runApp', icon: 'play' },
-      { label: 'Run QA', command: 'grails.qa', icon: 'beaker' },
       { label: 'Debug App', command: 'grails.debug', icon: 'debug-alt' },
       { label: 'Debug Tests', command: 'grails.debugTests', icon: 'beaker' },
       { label: 'Attach to Running App', command: 'grails.attach', icon: 'plug' },
@@ -1379,7 +1377,6 @@ function registerAdapterFactory(context) {
 }
 
 function activate(context) {
-  registerQaPanel(vscode, context);
   registerExceptionExplainer(vscode, context);
   // The debug adapter that makes .groovy breakpoints bind at all. Registered
   // unconditionally so a hand-written launch.json of type "groovy-dap" works

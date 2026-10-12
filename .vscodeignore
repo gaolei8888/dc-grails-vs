@@ -16,8 +16,8 @@ scripts/**
 docs/**
 CLAUDE.md
 
-# Runtime browser driver is staged explicitly in dist/qa-browser by build:qa.
-# Development dependencies and downloaded browsers are not shipped.
+# Development dependencies (playwright-core is used only by the editor test) are not shipped.
 node_modules/**
+dist/qa-browser/**
 pnpm-lock.yaml
 .npmrc

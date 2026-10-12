@@ -15,7 +15,7 @@
 | **Issues** | [github.com/gaolei8888/dc-grails-vs/issues](https://github.com/gaolei8888/dc-grails-vs/issues) |
 | **Changelog** | [CHANGELOG.md](https://github.com/gaolei8888/dc-grails-vs/blob/main/CHANGELOG.md) |
 
-Version 0.2.0 is a pre-release. To install it, open the Marketplace page above
+Version 0.1.31 is a pre-release. To install it, open the Marketplace page above
 and choose **Switch to Pre-Release Version**, or from the command line (the
 `--pre-release` is needed while this is one):
 
@@ -25,21 +25,6 @@ code --install-extension gaolei8888.grails-gradle-extension --pre-release
 
 Grails and Gradle commands from the command palette and a sidebar tree — and a
 debugger that can actually stop on a line of Groovy.
-
-## Grails QA — local preview
-
-**Run QA** in the Grails sidebar opens a panel for Domain constraints, real
-Hibernate/H2 persistence and browser page/form tests. Spring Security projects
-can use test credentials (optionally saved in VS Code credential storage), or
-skip password authentication in a temporary local QA instance. Load test users
-from the target database, select a tenant when detected, then select a user.
-QA requests then have that user's identity and roles,
-including Grails `currentUser`. Each result includes a short use-case description.
-
-Saved plans preserve regression expectations. Reports include failures,
-screenshots and uncovered cases; forms need configured success/error selectors.
-This first version targets Grails 7 with Hibernate and has been exercised on
-Windows. See the [QA setup and limits](docs/qa.md).
 
 ## Breakpoints in `.groovy` files
 
@@ -358,21 +343,6 @@ This is the one place the debugger runs code in your application. JDI will not p
 an int into a slot typed `java.lang.Integer`, and Groovy types nearly everything
 that way, so making a boxed number calls `valueOf` on the box class — a JDK static
 that takes no locks — single-threaded. Reading a value never runs anything.
-
-## Generate QA cases with AI
-
-Open **Grails: Run QA**, click **Generate QA cases with AI**, and choose a VS Code
-language model. It proposes cases from controller, view and Domain source excerpts.
-Review and save `ai-draft.json`, click **Use AI draft**, choose a test identity when
-needed, then **Run QA**. The local browser window shows the saved clicks, inputs
-and assertions; results include use-case descriptions, steps and screenshots.
-Clear **Show local browser during QA** to run headlessly.
-
-AI cases supplement the existing Domain baseline. Model output is validated data,
-and does not execute arbitrary code. No model provider leaves the saved plan intact.
-Generation infers expectations from bounded source excerpts, so review them before
-using them as a regression baseline. Run QA replays the plan; it does not yet use
-live screenshots for autonomous exploration.
 
 ## Explain an exception
 

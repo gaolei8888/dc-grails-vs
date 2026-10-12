@@ -6,18 +6,19 @@
 
 `dc-grails-vs` —— 一个 VSCode 扩展,给 **Grails/Groovy 项目**提供命令面板集成。
 
-- `package.json`:`name: "grails-gradle-extension"`,`publisher: "gaolei8888"`,version 0.2.0(pre-release)
-- `extension.js`:1904 行 JS(2026-10-12 并入 origin/dev 之后数),注册 **206 条命令**(合并后逐 id 核对;`package.json` 声明 205 条):
-  - 11 条显式命令 —— `grails.runApp` / `stopApp` / `debug` / `debugTests` / `stopDebug` /
-    `attach` / `explainException` / `showExceptionContext` / `qa` / `openApp` / `showOutput`
+- `package.json`:`name: "grails-gradle-extension"`,`publisher: "gaolei8888"`,version 0.1.31(pre-release)
+- `extension.js`:1901 行 JS(2026-10-12 移除 QA 之后数),注册 **205 条命令**(逐 id 核对;`package.json` 声明 204 条):
+  - 10 条显式命令 —— `grails.runApp` / `stopApp` / `debug` / `debugTests` / `stopDebug` /
+    `attach` / `explainException` / `showExceptionContext` / `openApp` / `showOutput`
   - `genericCommands[]` 76 条 —— 注册成 `grails.<cmd>`(`create-*`、`generate-*`、`dbm-*`、`s2-*`……),
     走 `grailsw`
   - `gradleTasks[]` 119 条 —— 注册成 `gradle.<task>`(`bootRun`、`build`、`test`、`idea`……),
     走 `gradlew`
-  - `package.json` 声明 205 条,零缺口零重复;唯一差额是 **`grails.openApp` 注册了但没声明**
-    —— 它只作为 status bar 的点击目标,故意不进命令面板(2026-10-12 合并后逐 id 核对)
+  - `package.json` 声明 204 条,零缺口零重复;唯一差额是 **`grails.openApp` 注册了但没声明**
+    —— 它只作为 status bar 的点击目标,故意不进命令面板(2026-10-12 移除 QA 后逐 id 核对:10 + 76 + 119 = 205)
 - `snippets/`:Groovy/Grails 代码片段
-- **已经在 Marketplace 上**:最新已发布的 pre-release 是 0.1.29;0.1.30 在 origin/dev 上,未发布;本分支的 0.2.0 待发(见「开发」)
+- **QA 子系统已移除(0.1.31)**:Run QA 面板、Playwright 浏览器用例、AI 浏览器用例、Domain/H2 规格生成、测试身份绕过都不在这个版本里(用户决定)。保留:异常解释(`lib/explain-exception.js`、`lib/exception-context.js`)与 GSP 支持。用户项目里已有的 `.grails-qa/` 目录不动。`playwright-core` 仅作 devDependency 保留,只给 `test/editor.test.js` / `scripts/test-editor.js`(`npm run test:editor`,真实 VS Code 窗口测试)用,不随 vsix 发布。
+- **已经在 Marketplace 上**:最新已发布的 pre-release 是 0.1.29;0.1.30 在 origin/dev 上,未发布;本分支的 0.1.31 待发(见「开发」)
 
 **这是一个通用工具,不绑定任何具体业务项目。** 需要一个 Grails 应用做靶子时,自建空白
 Grails 应用(7 或 8),不要借用别的业务仓库。**目标是同时支持 Grails 7 与 Grails 8**
@@ -40,58 +41,20 @@ URL mapping。`GET /example`、`GET /nested` 触发。起法同样是 `./gradlew
 
 ## 当前状态(2026-09-06)
 
-**2026-10-12 的版本线**:本分支(`merge-dev`)把 origin/dev(0.1.14 – 0.1.30:条件 / logpoint / 数据断点、GSP、QA、异常解释)与本地 0.2.0 线(Grails 7/8、launch 配置、JDK 发现、`groovy-dap` 改名……)合在一起,见下「合并 origin/dev(2026-10-12)」。下面这一节是 origin/dev 写的,版本号按它当时的情况。
+**2026-10-12 的版本线**:本分支(`merge-dev`)把 origin/dev(0.1.14 – 0.1.30:条件 / logpoint / 数据断点、GSP、QA(后已移除)、异常解释)与本地 0.1.31 线(Grails 7/8、launch 配置、JDK 发现、`groovy-dap` 改名……)合在一起,见下「合并 origin/dev(2026-10-12)」。下面这一节是 origin/dev 写的,版本号按它当时的情况。
 
 **Groovy 调试适配器已经做出来并发布**,最新已提交 Marketplace 的版本是 `0.1.19`(pre-release,
 publisher `gaolei8888`)。主线任务从「让断点能绑上」变成「继续把这个调试器做好用」。
 
-**`0.1.19` 已于 2026-09-06 按用户授权发布，vsce 返回 Published；已通过本地VSIX安装到日常编辑器，CLI确认版本0.1.19；当前窗口需Reload Window加载。** 0.1.18 补真实编辑器回归、GSP 高亮和 AI 解释异常；0.1.19 加 Grails QA 引擎、UI 和认证选项。
+**`0.1.19` 已于 2026-09-06 按用户授权发布，vsce 返回 Published；已通过本地VSIX安装到日常编辑器，CLI确认版本0.1.19；当前窗口需Reload Window加载。** 0.1.18 补真实编辑器回归、GSP 高亮和 AI 解释异常；0.1.19 加 Grails QA 引擎、UI 和认证选项(QA 已在 0.1.31 移除,见上)。
 发布后立即查询公共版本索引仍为0.1.17，正在等待Marketplace索引/校验传播；不要因暂未显示而重复发布同一版本。
 最新验证与实现见设计文档 §7.14、`docs/testing.md`。开头的 0.0.1/394 行是历史背景。
 
-### Grails QA 本地进展（0.1.19）
+### Grails QA(0.1.19 – 0.1.30)已在 0.1.31 移除
 
-2026-09-08：0.1.30 已本地打包安装，未发布。新增 Generate QA cases with AI → VS Code 模型选择 → ai-draft.json → Use AI draft → Run QA。lib/qa-ai.js 发送有界 controller/GSP/Domain 源码（不读配置/日志/DB），模拟模型测试验证流式解析、取消、无 provider；真实模型生成质量尚未实测。qa/browser-cases.js 校验最多 40 case／30 step，只执行 click/fill/select/check/visible/text/url，不执行模型 JS。保存 browserCases 时保留 Domain 基线及原页面，备份 plan.json.before-ai.json。面板默认可见本机浏览器，identitySession.run 透传 headless。AI case 限同 origin 导航与写请求；逐步输出、失败步骤和截图。34 Node通过、lint零error/旧6warning；真实VSCode AI draft suite通过（无provider提示→应用草稿→22 Domain+15UI）；安装目录引擎可见Edge smoke验证操作成功、错误断言失败、外站请求0。最终150文件/3.22MB，CLI确认0.1.30，需Reload。当前是源码生成+确定性重放，尚无截图驱动的实时AI探索。
-
-2026-09-08：按用户授权发布 0.1.29 pre-release，vsce 返回 Published gaolei8888.grails-gradle-extension v0.1.29。发布前 31 项 Node 测试通过，lint 零 error／原有 6 warning，构建成功；最终 VSIX 148 文件／3.22 MB，解包到系统 temp 后独立浏览器 smoke 通过。相同 VSIX 已强制安装本地，窗口需 Reload。Marketplace 索引可能稍后刷新，不要重复发布同版本。dc_classeditor 的 Windows test Docker 配置修改位于业务仓库，不在扩展包内。
-
-0.1.29已本地打包安装（未发布）：用户说tenant下user为空，查看实际QA窗口发现Find test users输入了`test`；搜索结果被筛掉，且Output占据下半屏，选择区不容易看见。改用户选择框在可选搜索前，增加selector旁状态/计数，区分无匹配与无用户，Clear filter按钮、Enter搜索，重载/切tenant清空旧filter，加载后滚到tenant/user选择区。真实VSCode tenant suite通过：无匹配提示→Clear恢复用户→切tenant清filter及已选user→空tenant→Cancel释放lock。lint零error/旧6warning；CLI确认0.1.29。用户需Reload Window，或旧窗口清空Find test users后点击Search即可取消筛选。
-
-0.1.28（2026-09-07）已打包安装，未发布：用户点击Load没有列表，实际重跑发现HibernateException。其CECurrentTenantResolver用裸DetachedCriteria枚举，旧fixture内包withTransaction掩盖问题；改fixture裸查询复现后，在Tenants.withoutId的零参闭包内用datastore.transactionManager +只读TransactionTemplate枚举，已修。安装引擎实际读取dc_classeditor test环境：2tenant，每个2个用户，只记录数量，没有选择身份/提交UI表单。发现项目test配置仍覆盖chainMap；仅在QA initializer对springSecurityFilterChainRegistrationBean设enabled=false，保持所有安全beans及capability请求保护，fixture断言credentials启用/Skip禁用。列表请求禁止重定向，非JSON返回明确报错，discovery异常写QA输出。已安装代码JDK25验证：裸resolver多租户14UI，credentials/bypass各14UI，capability/跨origin/请求隔离通过；31Node通过，lint旧6warning；安装runtime与源码逐文件一致。需Reload Window后重新Load。
-
-0.1.27（2026-09-07）已本地打包安装，未发布：Skip 面板改为 Load test users / tenants → 如检测到多租户先选tenant → 选该tenant的user。运行时从HibernateDatastore检测multiTenancyMode，通过AllTenantsResolver或DATABASE命名连接列tenant，通过Spring Security配置的GORM用户类只投影用户名（搜索/100条分页，过滤已映射的禁用/锁定/过期标记）。空库/不支持的provider明确提示，不创建/猜身份。选择进程保持并持有QA lock，Run复用同一进程；Cancel/关闭/切换target或auth/完成时停止并释放。加载用户前绑定RequestContextHolder和Tenants.withId；resolver有attributeName时同步设置并恢复session属性，适配CECurrentTenantResolver这类自定义session名称。不硬编码school.name，报告记录tenant。
-安装目录引擎+用户JDK25已验证：single/multi fixture各14 UI；租户内同名用户、空tenant、拒绝不存在tenant、分页106个可用用户、过滤disabled/locked、同进程复用、锁保护、currentUser及session租户。真实VSCode：Buttons+Skip 2项通过（22 Domain+14UI），Tenant choices 1项通过（切tenant清空用户/空tenant/Cancel释放lock）。31Node通过，lint零error/旧6warning；身份capability/请求隔离/跨origin不传user和tenant header复验通过。最终包148文件/3.21MB，需Reload Window；业务项目尚未重跑。
-GORM7.2.3坑：Tenants.withoutId没有(Class,Closure)重载，需传datastore实例；枚举tenant的闭包必须显式零参数 `{ -> ... }`，隐式it会触发withSession导致DataAccessResourceFailureException。身份枚举仅用于本地Skip模式；现有远程服务器和外部非GORM用户provider不自动读取。CLI原有手动用户名路径保留。
-
-0.1.26（2026-09-07）修复 Skip authentication 的 currentUser 缺失：UI 必填已有测试用户名，无需密码；只在本次 bootRun 的独立 sourceSet/classpath 注入 initializer/filter，用项目 userDetailsService 加载 principal/既有角色，每请求设置并恢复 SecurityContext。loopback/test + 内存随机 capability 限定 QA 浏览器，不写入配置/报告，不跨 origin 转发。不创建用户、不添加角色；特殊 session/SSO/WebSocket 仍需项目适配。历史 0.1.25 的“仅 HTTP bypass 不提供身份”已被此版本取代。
-已安装 0.1.26 后用用户 JAVA_HOME/JDK25 验证：credentials/bypass 各14项 UI，通过显式 action 检查真实 QaAccount/currentUser 和 ROLE_QA（不要使用旧 beforeInterceptor 闭包，Grails7 此路径不执行）；REST beans 和项目test数据库仍保留。identity guards 检查无/错误capability拒绝、无密码身份、请求隔离及跨origin重定向不泄露；安装包面板验证用户名/密码显示及 useCase 安全渲染。每项 Domain/UI 报告加入 useCase 描述，旧plan不重写。用户业务项目尚未重跑，仍需用户提供已有测试用户名。
-最终回归：31 Node 单测通过，lint零error/旧6warning；新fixture冻结约束mutation被捕获，恢复后22 Domain/H2通过，显式临时H2模式14 UI通过。最终VSIX 147文件/3.21MB已安装，CLI确认0.1.26，安装目录qa/lib/media逐文件与已验证源码一致。当前窗口需Reload Window。
-
-2026-09-06 后续修复：0.1.20 已本地打包并安装（未发布）。用户 QA 日志报 `'gradlew.bat' is not recognized`，wrapper 文件存在。用 `NoDefaultCurrentDirectoryInExePath=1` 在空白fixture复现，改显式 `.\gradlew.bat` 后通过；26项单测通过，安装目录CLI在相同限制下实际完成Domain inventory（Java17）。当前用户窗口需要Reload Window加载新版本。
-
-后续0.1.21已本地打包安装（未发布）：用户项目inventory报Hibernate DialectResolutionInfo，底层是`Failed to load driver class org.h2.Driver`。QA init在grailsQaTest和本次bootRun缺少H2时用独立configuration补充H2 2.4.240，不改应用依赖/build文件；已有H2则保留。空白fixture移除H2直接依赖，使用安装目录引擎验证。
-0.1.21安装后验证完成：继承用户JAVA_HOME/JDK25，缺H2的独立fixture成功导出inventory，mutation被捕获，恢复后20项Domain/H2通过，14项bypass UI通过且实际JDBC连接确认临时H2；26项Node测试通过。用户业务项目尚需Reload Window后重试。
-
-0.1.22已本地打包安装（未发布）：用户实际报告Domain8全部通过、UI0，原因是扫描器把`excluded-datasources`误判成多个datasources。现匹配完整配置键并忽略Groovy注释，运行时刷新旧计划中的datasource能力gap（不改冻结约束），输出Domain通过/失败/跳过及实际执行错误。安装后只读扫描用户项目确认multipleDataSources=false；28项Node测试通过（包含误判、真实声明和旧gap更新回归），lint零error/旧6warning。用户需Reload Window加载0.1.22；实际应用UI尚未通过，不要声称全业务QA通过。
-
-0.1.23已本地打包安装（未发布）：用户run `2026-09-06T23-14-02-599Z-run-130915` Domain通过；真实应用启动Liquibase执行`DEFAULT b'0'`被H2拒绝（Column B not found），同时STOMP localhost:61613拒绝连接。不能声称再修扩展即可全业务UI通过，也不要擅自禁迁移/外部服务。已询问用户可用QA应用URL（尚待回复）。修复引擎遇到`Application run failed`即中止本次进程、写当前report，不再等失败应用的后台线程退出；明确H2迁移失败提示。安装后运行30项Node测试通过，包括故意保持存活的失败进程会迅速停止、生成报告并释放lock。实际UI下一步需要准备可运行QA服务/依赖，用户默认JDK25保持不变。
-
-0.1.24已本地打包安装（未发布）：用户纠正“每个Grails项目自己有test database”，并要求修复QA输出红色ESC。**UI启动现默认project test环境/数据库，不能强行替换H2**；project模式不注入datasource/driver/dbCreate，保留应用迁移/服务配置，多datasource也可按项目配置启动。H2仅显式选项，Domain独立规则/持久化测试仍H2，不能混淆这两层。CLI增加--database=project|h2；SecretStorage区分project-test-local-qa与isolated-local-qa。qa/process使用stripVTControlCharacters过滤颜色/链接控制码并保留脱敏。安装后继承用户JDK25，独立fixture真实JDBC确认project test URL且无dataSource.url覆盖，credentials和bypass各14项UI通过，日志无ESC；31项Node测试通过。用户业务UI尚未验，不要声称全业务通过。
-
-0.1.25已本地打包安装（未发布）：用户bypass启动缺tokenStorageService，dc_classeditor resources里的LinkStompAuthInterceptor强依赖REST服务bean。**废弃active=false的bypass**：只为本次loopback QA设置active=true + filterChain.chainMap=[[pattern:'/**',filters:'none']]，保留安全插件及REST beans，绕过HTTP过滤器。独立fixture加入真实grails-spring-security-rest 7.0.1并强制ref('tokenStorageService')，安装后JDK25 credentials/bypass各14UI通过，验证tokenStorageService注入和项目test数据库。仅fixture使用固定公开JWT测试key；未改用户业务应用或其密钥。HTTP bypass不伪造登录用户，不绕过WebSocket/业务方法自己的权限检查。31项单测通过，错误提示现在显示missing Spring bean名称。
-
-**用户明确要求：使用其配置的JAVA_HOME（当前`C:\Users\gaole\java\jdk-25.0.4.1`），不要自行切换到其他JDK，包括历史测试靶子的JDK17。即使仅临时设置也不要擅自选择。先安装修复版，然后验证已安装代码。** 0.1.20安装目录CLI在用户JDK25上inventory已通过。
-
-- `qa/` 独立 CLI/引擎；`lib/qa-panel.js`、`media/qa.*` 是 `grails.qa` / sidebar Run QA 按钮。
-- 运行时导出约束并冻结 `.grails-qa/plan.json`；正常 run 不改基线。独立 HibernateDatastore + H2 真正 flush/clear/reload 和 unique，事务回滚。未知规则/关联/未配置 UI 断言是 gap，不算通过。
-- 浏览器真实填表/提交/校验字段错误/截图。登录使用项目+目标 origin 隔离的 SecretStorage；密码不进入生成文件或报告。没有接 AI 自动猜业务期望。
-- bypass 仅工具启动的 loopback/test/H2 进程：独立 `qa-overrides.groovy`，通过 `grails.config.locations` 加载 boolean false。**不能直接 `-Dgrails.plugin.springsecurity.active=false`：插件拿到字符串时 Groovy truth 仍为 true，实测安全过滤器仍启用。** 不修改应用配置，也不对已有服务器 bypass。
-- QA 的 Domain inventory 使用 mappingContext 的 validator.constrainedProperties；直接 `Domain.constrainedProperties` 需要 GrailsApplication，会失败。Grails inList 错误码是 `not.inList`。
-- 新空白靶子 `.vscode-test/qa-fixture` 由 `scripts/prepare-qa-fixture.js` 生成，只借用独立 dapspike 的构建工具链。Grails 7.2.3 + Spring Security 7.2.3 + Java17 + Edge 已验。
-- 真实编辑器 QA suite 5项通过：按钮/模式限制、账号登录20 Domain+14 UI、SecretStorage复用、bypass、错误密码失败。改变quantity最小值的mutation被旧计划捕获，恢复后20 Domain通过。
-- 最终25项Node测试通过，lint零error（旧6warning）；fixture实际JDBC连接确认临时H2，bypass 14项UI再次通过。`grails-gradle-extension-0.1.19.vsix` 144文件/3.2MB；解包到系统temp后无node_modules，随包driver仍能启动Edge并完成页面断言+截图。该安装包已发布并安装日常profile，CLI确认0.1.19。
-- `dist/qa-browser` 通过 `build:qa` 暂存 Playwright driver，VSIX不带浏览器二进制。安装Edge/Chrome或配置路径。说明 `docs/qa.md`，测试 `docs/testing.md`。
-- 本地启动仍执行应用bootstrap和外部集成；多datasource禁自动启动，使用预配置QA服务。当前支持范围是Grails7/Hibernate，不声称全项目业务QA或所有版本兼容。
+0.1.19 – 0.1.30 期间做过 Run QA 面板(`qa/`、`lib/qa-panel.js`、`media/qa.*`)、Playwright 浏览器用例、
+AI 浏览器用例、Domain/H2 规格和测试身份绕过。用户决定整体移除;细节只留在 git 历史和 `CHANGELOG.md` 里
+0.1.19 – 0.1.30 的条目,这里不再展开。已发布的 0.1.19 – 0.1.29 里仍带着它。
 
 ### 设计文档(权威,先读它)
 
@@ -135,9 +98,9 @@ attach 模式下不需要解析 Groovy:`ReferenceType.locationsOfLine(n)` 就是
 | **数据断点**;Attach to Running App | 0.1.17 / 0.1.18 修复 | harness + 真实编辑器 |
 | **GSP 高亮** | 0.1.18 本地 | TextMate 测试 + 编辑器截图 |
 | **AI 解释异常 / 查看异常上下文** | 0.1.18 本地 | 真实异常/无模型流程 + 模拟 provider；在线生成未验 |
-| Grails 8 支持、launch 配置 `Grails: Debug App`、JDK 自动发现、status bar 只在 Grails 工作区显示 | 0.2.0(待发) | 脚本驱动 + 真实窗口(见「Grails 7 / 8 支持」「已修(2026-10-11)」) |
-| 调试类型改名 `groovy-dap`(**破坏性**:`launch.json` 必须写 `"type": "groovy-dap"`) | 0.2.0(待发) | 真实窗口(扩展能激活);合并时 `lib/explain-exception.js` 的 tracker 也跟着改 |
-| `continued` 事件先于 resume(其它线程不再卡在 PAUSED)、冷 JVM 下 stepIn 的 juli 排除、逐变量读局部变量 | 0.2.0(待发) | `verifyProtocol` + 真实窗口(`continued`);juli:7 / 8 冷热 trace(合并前) |
+| Grails 8 支持、launch 配置 `Grails: Debug App`、JDK 自动发现、status bar 只在 Grails 工作区显示 | 0.1.31(待发) | 脚本驱动 + 真实窗口(见「Grails 7 / 8 支持」「已修(2026-10-11)」) |
+| 调试类型改名 `groovy-dap`(**破坏性**:`launch.json` 必须写 `"type": "groovy-dap"`) | 0.1.31(待发) | 真实窗口(扩展能激活);合并时 `lib/explain-exception.js` 的 tracker 也跟着改 |
+| `continued` 事件先于 resume(其它线程不再卡在 PAUSED)、冷 JVM 下 stepIn 的 juli 排除、逐变量读局部变量 | 0.1.31(待发) | `verifyProtocol` + 真实窗口(`continued`);juli:7 / 8 冷热 trace(合并前) |
 
 ### 最容易再踩一次的几个坑
 
@@ -287,9 +250,9 @@ owner 问过。结论是**不要再做一个聊天框**(那是 Copilot 的活),�
   **唯一的例外是 setVariable 造装箱值时调 `Integer.valueOf`**(只限 8 个 JDK 装箱类,`INVOKE_SINGLE_THREADED`),
   理由与边界见 §7.8;`WriteChecks` 里有检查把「目标里只跑过这 8 个类的 valueOf」钉住
 - 编译与运行都需要 `--add-modules jdk.jdi`(该模块不在默认根模块集合中)
-- **发布到 Marketplace** —— vsix 体积是真实约束。2026-10-12 并入 origin/dev 之后实测:vsix 3,381,267 字节(3.22 MB)、147 个文件;
-  大头是 `dist/qa-browser`(随包的 Playwright driver,115 个文件,解压后约 12.9 MB:`coreBundle.js` 3.5 MB、`utilsBundle.js` 3.0 MB……),
-  jar 只有 101334 字节;合并前本地 0.2.0 的 vsix 约 84 KB。QA 子系统与 playwright 按决定保留(随包)。`publisher` 已是合法 id `gaolei8888`
+- **发布到 Marketplace** —— vsix 体积是真实约束。2026-10-12 移除 QA 之后实测(`vsce package --no-dependencies --pre-release`):
+  vsix 155,076 字节、15 个文件(移除前、并入 origin/dev 之后是 3,381,267 字节、147 个文件,大头是 `dist/qa-browser` 里的 Playwright driver);
+  最大的是 `dist/groovy-dap.jar`(101334 字节)与 `extension.js`(70625 字节)。包里没有 `qa/`、`media/qa*`、`node_modules`、`docs`、`server`、`scripts`、`CLAUDE.md`。`.vscodeignore` 另加了 `dist/qa-browser/**`,防止旧构建残留随包。`publisher` 已是合法 id `gaolei8888`
 - **Watch 里改值(`setExpression`)延后**:合并时有意不带入,`supportsSetExpression` 不广告
 
 
@@ -302,7 +265,7 @@ owner 问过。结论是**不要再做一个聊天框**(那是 Copilot 的活),�
 - **从本地移植到 origin/dev 的 server 上**(各有测试):`org.apache.juli.*` 加进 `DEFAULT_STEP_EXCLUDES`;`continued{allThreadsContinued}` 在响应之后、**resume 之前**发,`onContinue` 与 `onStep` 都发(原来 `onContinue` 是 resume 之后);局部变量逐个 `frame.getValue`、只跳过 `InconsistentDebugInfoException`;求值遇到这个异常报 `'<name>' is not readable at this point ...`(origin/dev 的 `resolveRoot` 原来吞掉它并误报「no local, field or request attribute named」);`PathEvaluator.rejectUnsupported` 与括号匹配识别引号(`params['user-id']`、`map['a/b']`、`headers['x?y']`);`DapChannel` 接缝、`LoopbackChannel`、整个 `server/src/test`、`verifyProtocol` JavaExec、`scripts/build-server.js` 的错误报告。
 - **测试数**:合并前本地 `verifyProtocol` 有 46 个块、45 项通过;合并后 45 个块、**44 项通过 / 0 失败**。删掉或改写的本地检查:`PathExpression` 文法表(被「调用 / 运算符 / 闭包按名字拒绝」+「引号内字符不算运算符」取代);200 元素上限的求值检查(origin/dev 的求值没有这个上限);「过期帧是错误不是异常」(单元层;e2e 里仍有 stale frame 检查);`ValueParser` 的 100 多行字面量表(十六进制、`L` 后缀、转义、范围措辞……origin/dev 的 `ValueFactory` 没有这些,换成 32 行 `ValueFactory` 表);「装箱 `Integer` 被拒」「`Reference` 被拒」两条拒绝检查(origin/dev 允许,改成正向检查);合成名 / `final` 字段 / 被截断元素的拒绝(origin/dev 的代码里没有这些,`final` 由 JVM 拒绝,e2e 里验过);`setExpression` 检查(延后);JDI `InvalidTypeException` / `ClassNotLoadedException` 的专门措辞(origin/dev 统一报 `could not set ...: <异常>`)。新增:引号内运算符字符、不可读局部变量的求值消息、`valueOf` 钉住、`continued` 覆盖 `stepIn`、条件 / hit count / logpoint 的 e2e。
 - **合并后的脚本驱动复验**(2026-10-12,JDK 21.0.10,jar 101334 字节;scratchpad 里的 S1–S10 harness,`sourcePaths` 取扩展 `defaultSourcePaths` 的 artefact 目录;每个场景冷启动一次 `bootRun --debug-jvm`,S3、S6 另有热的第二遍):**两个靶子的 file:line 序列相同**(`dbgtarget` 7.2.3 与 `dbgtarget8` 8.0.0;除闭包编号 `closure2` 对 `closure3`;7 上的 `/nested` 返回 404,S6 / S7 不适用)。与合并前记录(本地 adapter)比:S4、S5a、S5b、S9 相同(8 上 S7 也相同),**其余不同,且是 origin/dev 的 step over / step into 设计带来的**:S1 方法返回后停在调用方**下一行**(10),不是调用行中段(9);S2 `stepIn` **能进入** `@Transactional` 方法(`$tt__transactionalMethod` 21、22、`closure:23`、25),此前是已知限制;S3 / S6 `stepIn` 进 `.each` 闭包停在 `closure:23`(冷、热一致),但**只停第一次迭代**(i=1),此前 i=1,2,3 都停;S10 同 S1。S3 一个请求含断点共停 5 次(合并前记录是 7 次)。**用户已于 2026-10-12 明确接受这一 stepIn 行为变化。**冷 JVM 下 stepIn 仍进闭包(`closure3.doCall:23`)。stepIn 要求 `sourcePaths` 是扩展传的源码目录。**注意**:harness 若把应用根目录当作唯一的 `sourcePaths`,origin/dev 的 step into 什么调用都不进(包过滤器是按 `sourcePaths` 下的目录名建的);扩展本身传的是 artefact 目录,不受影响。
-- **没验证**:真实 VSCode 窗口(合并后的 evaluate / 改值 / 条件 / logpoint / 数据断点 / GSP / QA 面板 / 异常解释 / 状态栏 / launch 配置);F5、F10/F11、hover;Windows / Linux。GSP、数据断点、QA 面板没有任何 server 侧或 node 侧测试覆盖到合并后的行为(node 单元测试 34 项:GSP 5 项要 `VSCODE_BUILTIN_EXTENSIONS`)。
+- **没验证**:真实 VSCode 窗口(合并后的 evaluate / 改值 / 条件 / logpoint / 数据断点 / GSP / 异常解释 / 状态栏 / launch 配置);F5、F10/F11、hover;Windows / Linux。GSP、数据断点没有任何 server 侧测试覆盖到合并后的行为(node 单元测试 15 项,2026-10-12 移除 QA 后实跑全部通过:异常解释 + GSP 语法;GSP 5 项要 `VSCODE_BUILTIN_EXTENSIONS`)。
 
 ## 已知缺陷
 
@@ -543,8 +506,8 @@ Grails 项目上验过,但同样没有从 VSCode UI 走过一遍。
 pnpm install
 npm run build:server   # 必须:构建 dist/groovy-dap.jar,否则调试 adapter 起不来
 # F5 启动 Extension Development Host
-pnpm test              # Node 单元测试(34 项;其中 GSP 的 5 项要 VSCODE_BUILTIN_EXTENSIONS=<VS Code>/Contents/Resources/app/extensions)
-pnpm test:editor       # 独立 Grails 靶子 + 隔离 VS Code + Playwright
+pnpm test              # Node 单元测试(15 项;其中 GSP 的 5 项要 VSCODE_BUILTIN_EXTENSIONS=<VS Code>/Contents/Resources/app/extensions)
+pnpm test:editor       # 独立 Grails 靶子 + 隔离 VS Code + Playwright(playwright-core 只在这里用,devDependency,不随 vsix 发布)
 pnpm lint              # 0 error / 10 warning(都是 extension.js 里没用的 `err`)
 (cd server && ./gradlew verifyProtocol)   # server/ 的无依赖检查(44 项);`./gradlew build` 也会跑
 ```
@@ -553,19 +516,19 @@ pnpm lint              # 0 error / 10 warning(都是 extension.js 里没用的 `
 
 ```bash
 npm run build:server
-npx --yes @vscode/vsce package --no-dependencies    # --no-dependencies 必须:仓库用 pnpm,
+npx --yes @vscode/vsce package --no-dependencies --pre-release    # --no-dependencies 必须:仓库用 pnpm,
                                                     # 默认的生产依赖核对会炸
 "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" \
-  --install-extension grails-gradle-extension-0.2.0.vsix --force
+  --install-extension grails-gradle-extension-0.1.31.vsix --force
 ```
 
 装完必须 `Cmd+Shift+P` → `Developer: Reload Window`,否则跑的还是旧 extension;已经写进
 output channel 的旧文本也不会回头重写,要重新 Run 一次才看得到新行为。
 
 扩展**已经在 Marketplace 上**(最新已发布的 pre-release 是 0.1.29;0.1.30 在 origin/dev 上,未发布)。需要 PAT,先
-`npx @vscode/vsce login gaolei8888`(交互式,**别把 token 放进 argv**)。**已定的计划(2026-10-12)**:把 `0.2.0` 作为 pre-release
+`npx @vscode/vsce login gaolei8888`(交互式,**别把 token 放进 argv**)。**已定的计划(2026-10-12)**:把 `0.1.31` 作为 pre-release
 做一次**更新发布**(不是首发):`npx @vscode/vsce publish --pre-release --no-dependencies`(版本号已写在 `package.json`,
-所以**不要**用 `publish patch`,它会把版本顶到 0.2.1;`vscode:prepublish` 现在还会 `build:qa` 暂存 Playwright driver);之后再以正式版发 `0.2.1`
+所以**不要**用 `publish patch`,它会把版本顶到 0.1.32;`vscode:prepublish` 现在只构建 adapter);之后若要升为正式版,必须用另一个版本号
 (预发布与正式版的版本号必须不同;VS Code 只支持 major.minor.patch,不支持 semver 后缀;奇偶约定只是官方建议,有意不遵循 ——
 origin/dev 的旧说法「次版本号必须是奇数才算 pre-release」不准确,本次合并没有去核实官方文档)。PAT 的 scope 要
 Marketplace → Manage,organization 必须选 All accessible organizations,否则 401。
