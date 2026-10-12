@@ -148,10 +148,13 @@ Grails 7.2.3 与 8.0.0 在每个用例里的 file:line 序列**完全一致**,�
 1. **VSCode UI**:用户 2026-10-11 在**真实窗口**里见过:status bar 的 Grails / Debug / Stop 按钮、
    经命令 / status bar 启动 Debug、断点命中且为实心、Locals / Watch 的值、Watch 里求变量路径、
    改值(「改值可以了」;发的是 `setVariable` 还是 `setExpression` 不知道)、类重载后断点重新绑定。
-   **仍未验**:「Grails: Debug App」launch 配置(下拉条目、无 `launch.json` 时按 F5、launch → attach
-   交接、会话结束时停应用)—— 用户跑过一次,撞上 JAVA_HOME 问题,从终端重开 VSCode 后说「可以了」,
-   但没说 launch 配置是否好用,**别当成能用**;Dock 启动窗口里的 JDK 自动发现;hover;F10/F11 手感;
-   Windows / Linux 路径;暂停时点 Stop(已知限制,见「未修」)。
+   **另一个 Claude 会话(dc-octo)2026-10-12 驱动用户的真实 VSCode**(装的是 HEAD 8c8e753 构建的 vsix,
+   靶子 `dbgtarget8` = Grails 8.0.0,JDK 21.0.10,有截图,用户要求的测试)又验了:launch 路径、JDK 发现
+   (`env -i` 启动)、双启动保护、工具栏单步,见「已修(2026-10-11)」第 8、9 条与下面的「真实窗口单步」。
+   同日又用 dc-octo(dco)在装了「工作区当前树」构建的 vsix 的真实窗口里验了第 11、12 条的两个修复(见「已修
+   (2026-10-11)」)。
+   **仍未验**:F5、F10/F11 按键(测试者按不了)、hover、Windows / Linux 路径;暂停时点 Stop(已知限制,见「未修」);
+   单步之后再 Continue 的路径。
 2. Micronaut 变体(文档说要 JDK 25)。
 3. 依赖插件的命令:`dbm-*`、`s2-*`、`asset*`。
 
@@ -301,33 +304,76 @@ Grails 的 S1–S10 矩阵是 scratchpad 里手动的 harness,不在 `build` 里
    `this`、map 条目与 Grails scope、面板没显示的元素、非字面量(如 `y + 1`)、给基本类型设 `null`、
    给 `String` 变量设数字(必须加引号)、后面才初始化的局部变量(`closure4.doCall:31` bci 1)、
    resume 之后的过期帧。静态字段面板不显示,所以不可写。
-   **验证**:脚本驱动 DAP 客户端 + gradle build:`verifyProtocol: 44 passed, 0 failed`(原 32;新增
+   **验证**:脚本驱动 DAP 客户端 + gradle build:`verifyProtocol: 44 passed, 0 failed`(提交时的数;原 32,之后第 12 条又加一项成 45;新增
    `WriteChecks.java` 12 项加端到端补充)。在 Grails 8.0.0 与 7.2.3 测试靶子的 scratch 副本上:停住时
    设 `a=7`、`b=true`、`d=2`、`s="new \"q\""`、`arr[1]=99`,continue 后 HTTP 响应显示新值;被捕获的
    闭包变量被拒;闭包参数 `k`(未被捕获)可写。
    **真实窗口**:用户确认改值能用(「改值可以了」)。**未验证**:双击改值与 Watch 里改值分别发
    `setVariable` 还是 `setExpression`(不知道);编辑体验的细节。**没发** `invalidated` 事件。
    **仍未实现(T2)**:条件断点、一般表达式求值、非字面量赋值、改对象 / 集合。
-8. **JDK 自动发现**(ca3e2fc)—— 从 Dock 启动的 VSCode 的 PATH 是 `/usr/bin:/bin:/usr/sbin:/sbin`,
-   没有 `JAVA_HOME`,`gradlew` 会撞上 macOS 的 `/usr/bin/java` 桩(`Unable to locate a Java Runtime`)。
+8. **JDK 自动发现**(ca3e2fc)—— 起因是观察到过一次:运行中的 VSCode 的 PATH 是
+   `/usr/bin:/bin:/usr/sbin:/sbin`、没有 `JAVA_HOME`,`gradlew` 撞上 macOS 的 `/usr/bin/java` 桩
+   (`Unable to locate a Java Runtime`)。**更正(2026-10-12)**:这不是 Dock / `open -a` 启动的通则 ——
+   VSCode 通常自己解析登录 shell 环境(`launchctl getenv JAVA_HOME` 为空,但 plugin host 里仍有
+   `JAVA_HOME=~/.sdkman/candidates/java/current`)。那次失败的**成因不明**(可能是 VSCode 的
+   shell 环境解析失败或超时,**未验证**);这里的搜索是它不解析时的兜底。
    `findJdk` 顺序:`grails.debug.javaPath`、`grails.run.env` / 进程环境里的 `JAVA_HOME`、macOS
    `java_home`、SDKMAN、各平台安装目录(含 Homebrew / Linux / Windows)、`PATH` 上的 `java`(排除那个桩)。
    只补缺口,不覆盖用户已设的值。adapter 需要 Java 17+ 且带 `jdk.jdi`;找不到时报一条清楚的错并列出
    三条出路;`grails.debug.javaPath` 无效时对 adapter 报错。用户也可设 `grails.run.env`
    `{"JAVA_HOME": ...}` / `grails.debug.javaPath`,或从终端用 `code .` 启动 VSCode。
-   **未验证**:Dock 启动窗口里的实际效果(用户是靠从终端重开 VSCode 绕过的);Windows / Linux 路径。
-9. **launch 配置「Grails: Debug App」**(2cb7cee,新增)—— Run and Debug 下拉(Dynamic
+   **已在真实窗口验证**(2026-10-12,`env -i` 启动的 VSCode:无 `JAVA_HOME`,
+   `PATH=/usr/bin:/bin:/usr/sbin:/sbin`):应用照样起来,Output「Grails - Debug」打出
+   `using JDK ~/.sdkman/candidates/java/current (~/.sdkman/candidates/java)`,
+   attach 成功,断点命中。`PATH` 完全清空时 `gradlew` 自己就失败(`uname: command not found`),是人为
+   情形,不处理。**未验证**:Windows / Linux 路径。
+9. **launch 配置「Grails: Debug App」**(2cb7cee)—— Run and Debug 下拉(Dynamic
    `DebugConfigurationProvider` + initial configuration / snippet;标签 "Grails (Groovy debugger)");
    Grails 工作区里没有 `launch.json` 时按 F5 经共用的 `launchDebuggee()` 起 `./gradlew bootRun
    --debug-jvm`,再把 attach 配置交给 VSCode;已有监听时 attach 而不是再起一个;超时 / 提前退出会停掉
    我们起的进程;结束会话会停应用。launch 属性:`projectDir`、`args`、`env`、`startTimeout`、
    `sourcePaths`。`debugPort` 不可配(Gradle 写死 5005)。
-   **没在真实窗口里验证过** —— 用户跑过一次、撞上 JAVA_HOME 问题,从终端重开后说「可以了」,没说 launch
-   配置是否好用。别声称它能用。
+   **真实窗口验证(2026-10-12,dc-octo,Grails 8.0.0 / JDK 21.0.10)**:Run and Debug 按钮 → 「Select
+   debugger」quick pick(9 项:1 「Grails (Groovy debugger)」[Suggested]、2 「Groovy / Grails」[Code
+   Groovy 的]、「More ... options...」若干含「More Grails (Groovy debugger) options...」、「Install an
+   extension for Groovy...」)→ 选「Grails (Groovy debugger)」立刻起 `./gradlew bootRun --debug-jvm`;
+   约 10 秒内 JDWP 5005 与应用 8080 都起来;Debug Console:`[groovy-dap] attached to localhost:5005
+   (OpenJDK 64-Bit Server VM 21.0.10)`、`bound ApplicationController.groovy:14 -> ...index (bci 63)`;
+   请求 `http://localhost:8080/` 停在第 14 行,Locals / Watch `a = 300`;Continue 继续;status bar 的
+   Stop 约 5 秒内释放 5005 / 8080,弹 toast「Grails debug process exited with code 143」。之后重启时按钮
+   直接启动、不再弹 picker(VSCode 记住了选择)。
+   「No Configurations」下拉里有「Grails (Groovy debugger)...」;点它出「Select Launch Configuration」,
+   当时里面有**两个**同名的 `Grails: Debug App`,一个是工作区文件夹(dbgtarget8)的,一个是 "user settings" 的
+   (用户没选,没有生成 `launch.json`);此重复已修,见第 11 条。
+   **双启动保护**:status bar 的 Debug 起来并 attach 后,再启动 launch 配置,弹警告「The running Grails app
+   already has a debugger attached.」,没有第二个 bootRun(进程数不变)。
+   **没测**:F5、F10/F11 按键、hover、Windows / Linux。
 10. **status bar 只在 Grails 工作区显示**(b492a5e)—— `looksLikeGrailsProject`:顶层有 `grails-app`
    目录,或 `gradle.properties` / `build.gradle` / `build.gradle.kts` 里含 "grails"(不分大小写)。
    用户在真实窗口里见到按钮能出现。**已知弱点**:只是提到 grails 的普通 Gradle 项目会误判;子目录里的
    Grails 应用识别不到;多根工作区只看 `workspaceFolders[0]`。后续 TODO:收紧匹配、往下找一层。
+11. ~~**「Select Launch Configuration」里有两个同名的 `Grails: Debug App`**~~(2026-10-12 的修复,
+   `extension.js`)—— 起因:VSCode 对每个 launch 来源都问一次动态配置提供者,包括没有工作区文件夹的
+   "user settings";提供者在 `folder` 为 undefined 时也返回了配置,于是出现重复。**修法**:`folder`
+   为 undefined 时返回 `[]`,只给工作区文件夹提供。**真实窗口验证**(2026-10-12,用 dc-octo(dco)
+   驱动用户的真实 VSCode:`dbgtarget8` 窗口,Grails 8.0.0,JDK 21.0.10,装的是用工作区当前树 = HEAD + 本条 +
+   第 12 条构建的 vsix,`vscode:prepublish` 重建了 jar,所以字节与 `dist/` 不同但条目相同,装完 Developer:
+   Reload Window):reload 后 status bar 出现 Grails 与 Debug 按钮;Run and Debug 下拉 →「Grails (Groovy
+   debugger)...」→「Select Launch Configuration」现在**只有一项** `Grails: Debug App  dbgtarget8`
+   (之前两项,其中一项 "user settings");Esc 关掉,没选,没生成 `launch.json`。
+   status bar 的 Stop 约 1 秒内释放 5005 / 8080,没留下 groovy-dap / bootRun / dbgtarget8 进程。
+12. ~~**其它线程在单步后仍显示 PAUSED**~~(2026-10-12 的修复,`server/` 的 `DebugSession`)——
+   现象:单步后 Call Stack 面板里其它线程一直标 PAUSED,而应用其实在响应。**修法**:对 `next` /
+   `stepIn` / `stepOut` / `continue`,在回应之后、**resume 之前**发 DAP `continued` 事件,带
+   `allThreadsContinued=true`(此前单步没有这个事件,`continue` 的则发得晚)。`verifyProtocol` 现在
+   **45 项**(新增一个端到端检查:断言每次单步 / continue 恰好一个 `continued`,且排在下一次停之前;
+   据告知该检查在没有修复时会失败)。**真实窗口验证**(2026-10-12,dc-octo(dco),同第 11 条的 vsix):
+   从侧边栏 Run and Debug 按钮启动;请求停在 `ApplicationController.groovy:14`,Call Stack 里
+   `http-nio-8080-exec-1` 为 PAUSED ON BREAKPOINT,其它线程(Catalina-utility-2、container-0、Live Reload
+   Server、File Watcher、http-nio-8080-exec-2、-3)为 PAUSED;点 Step Over 后(请求跑完,HTTP 200)Call
+   Stack 头显示 "Running",所有线程(Catalina-utility-2、container-0、Live Reload Server、File Watcher、
+   exec-1..exec-6)显示 RUNNING。**没验证**:单步之后再 Continue 的路径(竞态假设没被触发);「`continued`
+   发得晚」那种竞态仍**未复现**。
 
 ### 已修(2026-08-31)
 
@@ -376,6 +422,14 @@ Grails 项目上验过,但同样没有从 VSCode UI 走过一遍。
 - **已知限制(用户决定不处理)**:JVM 停在断点上时点 Stop,只会结束 `gradlew` 客户端;应用 JVM 与
   adapter 要等到 Continue 才会走。
 - **已知限制**:`stopEverything` 会杀掉任何监听 5005 的 java 进程;端口不可配(Gradle 写死 5005)。
+- **真实窗口单步(2026-10-12,dc-octo,工具栏点击;`dbgtarget8` 的 `index()`,断点在第 13 行
+  `int a = 300` 与第 14 行(结束该 action 的 map 字面量))**:停在 13:1(Locals 只有 `this`;Watch `a` →
+  `'a' is not defined in this frame`);Step Over → 14:1,Locals 与 Watch 里 `a = 300`;在第 14 行 Step
+  Into → 无可见变化(仍 14:1,无可进入的);在第 14 行 Step Out 或 Step Over → 请求跑完(HTTP 200),
+  不会停在框架调用方里(设计如此:step filter 不在项目源码之外停)。
+- **Step Into 在没有可进入内容的行上什么也不发生**(保留:文档记载的有意行为,改动有回归风险;
+  以后用 `trace: true` 抓一份并重跑 S1–S10 矩阵时再看)。原先同批的另两个小怪现象(重复的
+  `Grails: Debug App`、其它线程仍标 PAUSED)已修,见「已修(2026-10-11)」第 11、12 条。
 - **热重载**:改源码不会自动生效,要重新编译并让类重载;已观察到重载后断点重新绑定且新值可见(见
   「已修(2026-10-11)」第 6 条),但触发重载的是什么不清楚。
 - **vsix 里还带着三个很小的 `.github/modernize/java-upgrade` hook 脚本**(Copilot 遗留);以后把
@@ -394,7 +448,7 @@ npm run build:server   # 必须:构建 dist/groovy-dap.jar,否则调试 adapter 
 # F5 启动 Extension Development Host
 pnpm test              # .vscode-test.mjs
 npx eslint .
-(cd server && ./gradlew verifyProtocol)   # server/ 的无依赖检查(44 项);`./gradlew build` 也会跑
+(cd server && ./gradlew verifyProtocol)   # server/ 的无依赖检查(45 项);`./gradlew build` 也会跑
 ```
 
 装到真实 VSCode 里试(不是 F5 那个 Extension Development Host,两者是两份代码):

@@ -85,17 +85,26 @@ The type is `groovy-dap`, not `groovy`: another Groovy extension may already own
 installed, its own "Groovy / Grails..." entry in the Run and Debug dropdown is
 Code Groovy's, not this extension's.
 
-### Launch configuration (new, not yet verified in a real window)
+### Launch configuration
 
-A **Grails: Debug App** launch configuration (offered in the Run and Debug
-dropdown and under Add Configuration; the debugger itself is labelled "Grails
-(Groovy debugger)") starts `./gradlew bootRun --debug-jvm` and attaches; F5
-with no `launch.json` in a Grails workspace does the same. It attaches instead of
-starting a second app if one is already listening, and ending the session stops an
-app it started. Launch attributes: `projectDir`, `args`, `env`, `startTimeout`,
-`sourcePaths`. The debug port is not configurable, because Gradle hard-codes 5005.
-**This has not been checked in a real VS Code window yet**; use Grails: Debug App
-from the command palette or status bar, which has.
+Starting the debugger from Run and Debug runs `./gradlew bootRun --debug-jvm` and
+attaches; F5 with no `launch.json` in a Grails workspace is meant to do the same.
+It attaches instead of starting a second app if one is already listening, and
+ending the session stops an app it started. Launch attributes: `projectDir`,
+`args`, `env`, `startTimeout`, `sourcePaths`. The debug port is not configurable,
+because Gradle hard-codes 5005.
+
+Checked in a real VS Code window (2026-10-12, Grails 8.0.0, JDK 21): the Run and
+Debug button opens "Select debugger"; picking **Grails (Groovy debugger)** (the
+debugger's label) starts the app and attaches within about 10 seconds; a request
+stops at the breakpoint with the right values; Continue resumes; Stop in the status
+bar frees the ports. On later runs the button starts it directly. Starting it again
+while a debugger is attached shows a warning and does not start a second app. The
+name **Grails: Debug App** is the configuration's name: it appears in a generated
+`launch.json`, under Add Configuration, and in the "Select Launch Configuration"
+list (one entry, for the workspace folder; builds of 0.1.7 before the fix also
+listed a duplicate under "user settings").
+**Not yet verified:** F5, and the F10/F11 keys.
 
 ## Debugging tests
 
@@ -134,8 +143,9 @@ The application's log goes to an output channel — **Grails - Normal** for Run 
   In a real VS Code window (2026-10-11) the status bar buttons, Debug App,
   breakpoint hits, Locals and Watch values, evaluating a variable path in Watch,
   changing a value, and breakpoint rebinding after a class reload were seen working.
-  **Not yet seen in a real window:** the launch configuration, hover, F10/F11 feel,
-  JDK discovery from a Dock-launched window, and Windows and Linux paths. A Grails 8
+  The launch configuration, stepping with the toolbar buttons and the JDK search were
+  seen working on 2026-10-12 (see Launch configuration). **Not yet seen in a real
+  window:** F5, the F10/F11 keys, hover, and Windows and Linux paths. A Grails 8
   application itself needs Java 21 or newer.
 - **A full JDK, 17 or newer** (not a JRE: the adapter uses the `jdk.jdi` module).
   The JDK your application runs on can be a different one.
@@ -150,10 +160,13 @@ The application's log goes to an output channel — **Grails - Normal** for Run 
   appears only when there is no usable `java` at all (none found and none on
   `PATH`, or only the macOS stub). A `java` that is on `PATH` but too old or
   without `jdk.jdi` is still handed to the adapter, which then fails to start with
-  Java's own message; point `grails.debug.javaPath` at a full JDK 17+. A VS Code
-  started from the Dock has no `JAVA_HOME`; set `grails.run.env`
-  (`{"JAVA_HOME": "..."}`) or `grails.debug.javaPath`, or start VS Code from a
-  terminal with `code .`. Discovery from a Dock-launched window is not yet verified.
+  Java's own message; point `grails.debug.javaPath` at a full JDK 17+. VS Code
+  usually resolves your shell environment itself, so `JAVA_HOME` is normally there;
+  this search is a fallback for when it is not (seen once, cause unknown). It was
+  verified with VS Code started with an empty environment (no `JAVA_HOME`, a bare
+  `PATH`): the app started and attached using the SDKMAN JDK. You can also set
+  `grails.run.env` (`{"JAVA_HOME": "..."}`) or `grails.debug.javaPath`, or start VS
+  Code from a terminal with `code .`.
 - For `grails.debug.adapter: "java"` only: the
   [Debugger for Java](https://marketplace.visualstudio.com/items?itemName=vscjava.vscode-java-debug)
   extension.
@@ -208,6 +221,9 @@ which is indistinguishable from a hang.
   running app. Once the class was reloaded (what triggers that was not
   established), breakpoints rebound to the new class and showed the new value; seen
   in one scenario in a real window.
+- **Step Into with nothing to enter does nothing.** On the last line of an action
+  it stays on that line; Step Out or Step Over there lets the request finish
+  without stopping in framework code.
 - **Stop while paused:** if the JVM is stopped at a breakpoint, Stop only ends the
   Gradle client; the application and the adapter stay until you Continue.
 - Stopping kills any `java` process listening on the debug port (5005), which
