@@ -18,7 +18,7 @@
     —— 它只作为 status bar 的点击目标,故意不进命令面板(2026-10-12 移除 QA 后逐 id 核对:10 + 76 + 119 = 205)
 - `snippets/`:Groovy/Grails 代码片段
 - **QA 子系统已移除(0.1.31)**:Run QA 面板、Playwright 浏览器用例、AI 浏览器用例、Domain/H2 规格生成、测试身份绕过都不在这个版本里(用户决定)。保留:异常解释(`lib/explain-exception.js`、`lib/exception-context.js`)与 GSP 支持。用户项目里已有的 `.grails-qa/` 目录不动。`playwright-core` 仅作 devDependency 保留,只给 `test/editor.test.js` / `scripts/test-editor.js`(`npm run test:editor`,真实 VS Code 窗口测试)用,不随 vsix 发布。
-- **已经在 Marketplace 上**:最新已发布的 pre-release 是 0.1.29;0.1.30 在 origin/dev 上,未发布;本分支的 0.1.31 待发(见「开发」)
+- **已经在 Marketplace 上**:**0.1.31(pre-release)已于 2026-10-12 发布**(`vsce publish` 返回 `Published`,见「开发」);此前最新是 0.1.29,0.1.30 从未发布。公共索引当时还没刷新(仍显示 0.1.29),**不要因暂未显示而重复发布**
 
 **这是一个通用工具,不绑定任何具体业务项目。** 需要一个 Grails 应用做靶子时,自建空白
 Grails 应用(7 或 8),不要借用别的业务仓库。**目标是同时支持 Grails 7 与 Grails 8**
@@ -98,9 +98,9 @@ attach 模式下不需要解析 Groovy:`ReferenceType.locationsOfLine(n)` 就是
 | **数据断点**;Attach to Running App | 0.1.17 / 0.1.18 修复 | harness + 真实编辑器 |
 | **GSP 高亮** | 0.1.18 本地 | TextMate 测试 + 编辑器截图 |
 | **AI 解释异常 / 查看异常上下文** | 0.1.18 本地 | 真实异常/无模型流程 + 模拟 provider；在线生成未验 |
-| Grails 8 支持、launch 配置 `Grails: Debug App`、JDK 自动发现、status bar 只在 Grails 工作区显示 | 0.1.31(待发) | 脚本驱动 + 真实窗口(见「Grails 7 / 8 支持」「已修(2026-10-11)」) |
-| 调试类型改名 `groovy-dap`(**破坏性**:新配置写 `"type": "groovy-dap"`;旧 `"type": "groovy"` 在没有别的扩展占着 `groovy` 时靠兼容别名继续可用,装了 Code Groovy 的机器上仍必须改) | 0.1.31(待发) | 真实窗口(扩展能激活);合并时 `lib/explain-exception.js` 的 tracker 也跟着改 |
-| `continued` 事件先于 resume(其它线程不再卡在 PAUSED)、冷 JVM 下 stepIn 的 juli 排除、逐变量读局部变量 | 0.1.31(待发) | `verifyProtocol` + 真实窗口(`continued`);juli:7 / 8 冷热 trace(合并前) |
+| Grails 8 支持、launch 配置 `Grails: Debug App`、JDK 自动发现、status bar 只在 Grails 工作区显示 | 0.1.31 | 脚本驱动 + 真实窗口(见「Grails 7 / 8 支持」「已修(2026-10-11)」) |
+| 调试类型改名 `groovy-dap`(**破坏性**:新配置写 `"type": "groovy-dap"`;旧 `"type": "groovy"` 在没有别的扩展占着 `groovy` 时靠兼容别名继续可用,装了 Code Groovy 的机器上仍必须改) | 0.1.31 | 真实窗口(扩展能激活);合并时 `lib/explain-exception.js` 的 tracker 也跟着改 |
+| `continued` 事件先于 resume(其它线程不再卡在 PAUSED)、冷 JVM 下 stepIn 的 juli 排除、逐变量读局部变量 | 0.1.31 | `verifyProtocol` + 真实窗口(`continued`);juli:7 / 8 冷热 trace(合并前) |
 
 ### 最容易再踩一次的几个坑
 
@@ -538,8 +538,15 @@ npx --yes @vscode/vsce package --no-dependencies --pre-release    # --no-depende
 装完必须 `Cmd+Shift+P` → `Developer: Reload Window`,否则跑的还是旧 extension;已经写进
 output channel 的旧文本也不会回头重写,要重新 Run 一次才看得到新行为。
 
-扩展**已经在 Marketplace 上**(最新已发布的 pre-release 是 0.1.29;0.1.30 在 origin/dev 上,未发布)。需要 PAT,先
-`npx @vscode/vsce login gaolei8888`(交互式,**别把 token 放进 argv**)。**已定的计划(2026-10-12)**:把 `0.1.31` 作为 pre-release
+扩展**已经在 Marketplace 上**。**0.1.31(pre-release)已于 2026-10-12 发布**:`vsce publish` 返回
+`Published gaolei8888.grails-gradle-extension v0.1.31`,用的是同一份已构建的 vsix(15 个文件,152.53 KB)。发布后立刻查询公共索引
+仍是 0.1.29(Marketplace 还在校验 / 传播),**不要因暂未显示而重复发布**;之后用 `npx @vscode/vsce show gaolei8888.grails-gradle-extension`
+或 Hub 页面确认。**未核实**:0.1.31 在公共列表里出现,以及从 Marketplace 装到的就是它。
+发布经过(下次照做):Claude 的沙箱读不到用户在自己 shell 里 `vsce login` 存的凭据(Claude 这边 `verify-pat` 报 `TF400813`,用户那边通过),
+所以**最后的 publish 由用户在自己的终端跑**,Claude 只负责构建、打包与事后核对:
+`npx @vscode/vsce publish --pre-release --no-dependencies --packagePath grails-gradle-extension-0.1.31.vsix`
+(终端里不要带 `!` 前缀,那是 Claude Code 的)。发布后撤销 PAT,并删掉 `vsce` 在钥匙串打不开时写的 `~/.vsce` 明文文件。
+需要 PAT 时先 `npx @vscode/vsce login gaolei8888`(交互式,**别把 token 放进 argv**)。**当时定的做法(2026-10-12)**:把 `0.1.31` 作为 pre-release
 做一次**更新发布**(不是首发):`npx @vscode/vsce publish --pre-release --no-dependencies`(版本号已写在 `package.json`,
 所以**不要**用 `publish patch`,它会把版本顶到 0.1.32;`vscode:prepublish` 现在只构建 adapter);之后若要升为正式版,必须用另一个版本号
 (预发布与正式版的版本号必须不同;VS Code 只支持 major.minor.patch,不支持 semver 后缀;奇偶约定只是官方建议,有意不遵循 ——
