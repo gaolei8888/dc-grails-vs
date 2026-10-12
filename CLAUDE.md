@@ -18,7 +18,7 @@
     —— 它只作为 status bar 的点击目标,故意不进命令面板(2026-10-12 移除 QA 后逐 id 核对:10 + 76 + 119 = 205)
 - `snippets/`:Groovy/Grails 代码片段
 - **QA 子系统已移除(0.1.31)**:Run QA 面板、Playwright 浏览器用例、AI 浏览器用例、Domain/H2 规格生成、测试身份绕过都不在这个版本里(用户决定)。保留:异常解释(`lib/explain-exception.js`、`lib/exception-context.js`)与 GSP 支持。用户项目里已有的 `.grails-qa/` 目录不动。`playwright-core` 仅作 devDependency 保留,只给 `test/editor.test.js` / `scripts/test-editor.js`(`npm run test:editor`,真实 VS Code 窗口测试)用,不随 vsix 发布。
-- **已经在 Marketplace 上**:**0.1.31(pre-release)已于 2026-10-12 发布**(`vsce publish` 返回 `Published`,见「开发」);此前最新是 0.1.29,0.1.30 从未发布。公共索引当时还没刷新(仍显示 0.1.29),**不要因暂未显示而重复发布**
+- **已经在 Marketplace 上**:**0.1.31(pre-release)已于 2026-10-12 发布**(`vsce publish` 返回 `Published`,见「开发」);此前最新是 0.1.29,0.1.30 从未发布。发布后一段时间内公共索引仍显示 0.1.29(Marketplace 审查中),随后 `vsce show` 已列出 0.1.31(pre-release,2026-10-12)—— **已确认**;**别重复发布**
 
 **这是一个通用工具,不绑定任何具体业务项目。** 需要一个 Grails 应用做靶子时,自建空白
 Grails 应用(7 或 8),不要借用别的业务仓库。**目标是同时支持 Grails 7 与 Grails 8**
@@ -540,8 +540,9 @@ output channel 的旧文本也不会回头重写,要重新 Run 一次才看得�
 
 扩展**已经在 Marketplace 上**。**0.1.31(pre-release)已于 2026-10-12 发布**:`vsce publish` 返回
 `Published gaolei8888.grails-gradle-extension v0.1.31`,用的是同一份已构建的 vsix(15 个文件,152.53 KB)。发布后立刻查询公共索引
-仍是 0.1.29(Marketplace 还在校验 / 传播),**不要因暂未显示而重复发布**;之后用 `npx @vscode/vsce show gaolei8888.grails-gradle-extension`
-或 Hub 页面确认。**未核实**:0.1.31 在公共列表里出现,以及从 Marketplace 装到的就是它。
+仍是 0.1.29(Marketplace 审查中,不是失败),**不要因暂未显示而重复发布**;审查通过后(2026-10-12 当天)
+`npx @vscode/vsce show gaolei8888.grails-gradle-extension` 已列出 0.1.31(pre-release)—— **列表出现已确认**。
+**仍未核实**:从 Marketplace 实际装到的就是 0.1.31(没有在干净的 VS Code 里装过)。
 发布经过(下次照做):Claude 的沙箱读不到用户在自己 shell 里 `vsce login` 存的凭据(Claude 这边 `verify-pat` 报 `TF400813`,用户那边通过),
 所以**最后的 publish 由用户在自己的终端跑**,Claude 只负责构建、打包与事后核对:
 `npx @vscode/vsce publish --pre-release --no-dependencies --packagePath grails-gradle-extension-0.1.31.vsix`
