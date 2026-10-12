@@ -93,9 +93,12 @@ attach configuration:
 ```
 
 The type is `groovy-dap`, not `groovy`: another Groovy extension may already own
-`groovy`, and VS Code allows one debug adapter per type. If you have Code Groovy
-installed, its own "Groovy / Grails..." entry in the Run and Debug dropdown is
-Code Groovy's, not this extension's.
+`groovy`, and VS Code allows one debug adapter per type. A `launch.json` written for
+0.1.29 or earlier with `"type": "groovy"` keeps working as a compatibility alias, as
+long as no other extension owns `groovy` (the "Grails - Debug" output channel says so
+when one does); change it to `groovy-dap` when convenient, and you must on a machine
+with Code Groovy. If you have Code Groovy installed, its own "Groovy / Grails..."
+entry in the Run and Debug dropdown is Code Groovy's, not this extension's.
 
 ### Launch configuration
 

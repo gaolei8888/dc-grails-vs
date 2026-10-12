@@ -34,7 +34,8 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onDebugResolve:groovy-dap"
+    "onDebugResolve:groovy-dap",
+    "onDebugResolve:groovy"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -216,6 +217,84 @@
             }
           }
         ]
+      },
+      {
+        "type": "groovy",
+        "label": "Grails (Groovy debugger, legacy `groovy` type)",
+        "languages": [
+          "groovy",
+          "gsp"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "projectDir": {
+                "type": "string",
+                "description": "Grails project root to run bootRun in.",
+                "default": "${workspaceFolder}"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Extra arguments for bootRun, after those from grails.run.args.",
+                "default": []
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Extra environment variables for the app, merged over grails.run.env.",
+                "default": {}
+              },
+              "startTimeout": {
+                "type": "number",
+                "description": "How long to wait for the JVM to open its debug port, in seconds (cold start plus a full compile).",
+                "default": 300
+              },
+              "sourcePaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Roots to resolve stack frames against. Defaults to the Grails artefact directories of projectDir.",
+                "default": []
+              }
+            }
+          },
+          "attach": {
+            "required": [
+              "port"
+            ],
+            "properties": {
+              "hostName": {
+                "type": "string",
+                "description": "Host the target JVM is listening on.",
+                "default": "localhost"
+              },
+              "port": {
+                "type": "number",
+                "description": "JDWP port. Grails' bootRun --debug-jvm uses 5005.",
+                "default": 5005
+              },
+              "timeout": {
+                "type": "number",
+                "description": "How long to keep retrying the attach, in milliseconds.",
+                "default": 30000
+              },
+              "sourcePaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Roots to resolve stack frames against. Defaults to the Grails artefact directories of the workspace folder.",
+                "default": []
+              }
+            }
+          }
+        }
       }
     ],
     "configuration": {

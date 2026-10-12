@@ -728,6 +728,18 @@ function javaDebugAvailable() {
 const DEBUG_TYPE = 'groovy-dap';
 
 /**
+ * What DEBUG_TYPE was called up to 0.1.29. launch.json files written then say
+ * "type": "groovy", so it stays registered as an alias -- unless another extension
+ * (Code Groovy) holds the name, in which case only DEBUG_TYPE works.
+ */
+const LEGACY_DEBUG_TYPE = 'groovy';
+
+/** True for a session of this extension's adapter, whichever name it was started under. */
+function isGroovyDebugType(type) {
+  return type === DEBUG_TYPE || type === LEGACY_DEBUG_TYPE;
+}
+
+/**
  * The debug type to start a session with. The grails.debug.adapter setting keeps
  * its 'groovy' / 'java' values (vscode-java-debug being the second) so a stored
  * setting stays valid; 'groovy' means DEBUG_TYPE.
@@ -933,7 +945,7 @@ async function startForLaunch(folder, config) {
     // would fight it for 5005 and 8080, so attach to the one that is up -- once
     // it has said which port it is on.
     const active = vscode.debug.activeDebugSession;
-    if (!gradleDebugPort || (active && active.type === DEBUG_TYPE)) {
+    if (!gradleDebugPort || (active && isGroovyDebugType(active.type))) {
       vscode.window.showWarningMessage(gradleDebugPort
         ? 'The running Grails app already has a debugger attached.'
         : 'A Grails debug process is still starting. Try again once it has opened its '
@@ -1376,8 +1388,43 @@ function registerAdapterFactory(context) {
   }
 }
 
+/**
+ * The "groovy" alias for DEBUG_TYPE: same adapter, same resolving. Strictly
+ * best-effort and quiet -- the name may belong to Code Groovy, which is a normal
+ * state, not a warning -- so it never throws and never opens a dialog. The
+ * resolver is only attached once the factory is ours, so another extension's
+ * "groovy" configurations are left alone. Returns whether the alias is ours.
+ */
+function registerLegacyDebugType(context) {
+  const log = outputChannel('Grails - Debug');
+  try {
+    context.subscriptions.push(
+      vscode.debug.registerDebugAdapterDescriptorFactory(LEGACY_DEBUG_TYPE, makeAdapterFactory(context)));
+  } catch (err) {
+    const message = String(err && err.message);
+    log.appendLine(/can only be registered once/.test(message)
+      ? '[grails] legacy debug type "' + LEGACY_DEBUG_TYPE + '" is owned by another extension; use "type": "'
+        + DEBUG_TYPE + '" in launch.json'
+      : '[grails] could not register the legacy "' + LEGACY_DEBUG_TYPE + '" debug type: ' + message);
+    return false;
+  }
+  try {
+    context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider(LEGACY_DEBUG_TYPE, {
+      resolveDebugConfiguration(folder, config) {
+        log.appendLine('[grails] launch.json uses the legacy "' + LEGACY_DEBUG_TYPE
+          + '" debug type; "' + DEBUG_TYPE + '" is the current name');
+        return groovyConfigurationProvider.resolveDebugConfiguration(folder, config);
+      },
+      resolveDebugConfigurationWithSubstitutedVariables:
+        groovyConfigurationProvider.resolveDebugConfigurationWithSubstitutedVariables
+    }));
+  } catch (err) {
+    log.appendLine('[grails] could not register the legacy "' + LEGACY_DEBUG_TYPE + '" resolver: ' + err.message);
+  }
+  return true;
+}
+
 function activate(context) {
-  registerExceptionExplainer(vscode, context);
   // The debug adapter that makes .groovy breakpoints bind at all. Registered
   // unconditionally so a hand-written launch.json of type "groovy-dap" works
   // whether or not the app was started through this extension.
@@ -1386,6 +1433,11 @@ function activate(context) {
     vscode.debug.registerDebugConfigurationProvider(DEBUG_TYPE, groovyConfigurationProvider),
     vscode.window.registerTreeDataProvider('grailsCommands', new GrailsCommandsProvider())
   );
+  // The exception explainer follows the same names, so it never watches another
+  // extension's "groovy" sessions.
+  const ownsLegacyType = registerLegacyDebugType(context);
+  registerExceptionExplainer(vscode, context,
+    ownsLegacyType ? [DEBUG_TYPE, LEGACY_DEBUG_TYPE] : [DEBUG_TYPE]);
   // Dynamic (Grails: Debug App in the Run and Debug dropdown, no launch.json needed)
   // needs a newer VS Code than the engines floor might guarantee; without it the
   // launch.json route and the status bar still work.
@@ -1397,7 +1449,7 @@ function activate(context) {
   // A session started from a launch configuration owns the app it started: ending
   // the session (Stop, Disconnect) ends the app, as it does in any other debugger.
   context.subscriptions.push(vscode.debug.onDidTerminateDebugSession(session => {
-    if (session.type !== DEBUG_TYPE || launchedPort === null || !gradleDebugProcess
+    if (!isGroovyDebugType(session.type) || launchedPort === null || !gradleDebugProcess
         || !session.configuration || session.configuration.port !== launchedPort) {
       return;
     }
@@ -1595,7 +1647,7 @@ function activate(context) {
 
     // A second session on the same JVM would fight the first over its breakpoints.
     const active = vscode.debug.activeDebugSession;
-    const activeConfig = active && active.type === DEBUG_TYPE ? active.configuration || {} : null;
+    const activeConfig = active && isGroovyDebugType(active.type) ? active.configuration || {} : null;
     if (activeConfig && Number(activeConfig.port) === port
         && (activeConfig.hostName || 'localhost') === hostName) {
       vscode.window.showWarningMessage(`A debugger is already attached to ${hostName}:${port}.`);

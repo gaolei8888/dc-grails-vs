@@ -7,7 +7,7 @@
 `dc-grails-vs` —— 一个 VSCode 扩展,给 **Grails/Groovy 项目**提供命令面板集成。
 
 - `package.json`:`name: "grails-gradle-extension"`,`publisher: "gaolei8888"`,version 0.1.31(pre-release)
-- `extension.js`:1901 行 JS(2026-10-12 移除 QA 之后数),注册 **205 条命令**(逐 id 核对;`package.json` 声明 204 条):
+- `extension.js`:1953 行 JS(2026-10-12 加兼容别名之后数),注册 **205 条命令**(逐 id 核对;`package.json` 声明 204 条):
   - 10 条显式命令 —— `grails.runApp` / `stopApp` / `debug` / `debugTests` / `stopDebug` /
     `attach` / `explainException` / `showExceptionContext` / `openApp` / `showOutput`
   - `genericCommands[]` 76 条 —— 注册成 `grails.<cmd>`(`create-*`、`generate-*`、`dbm-*`、`s2-*`……),
@@ -99,7 +99,7 @@ attach 模式下不需要解析 Groovy:`ReferenceType.locationsOfLine(n)` 就是
 | **GSP 高亮** | 0.1.18 本地 | TextMate 测试 + 编辑器截图 |
 | **AI 解释异常 / 查看异常上下文** | 0.1.18 本地 | 真实异常/无模型流程 + 模拟 provider；在线生成未验 |
 | Grails 8 支持、launch 配置 `Grails: Debug App`、JDK 自动发现、status bar 只在 Grails 工作区显示 | 0.1.31(待发) | 脚本驱动 + 真实窗口(见「Grails 7 / 8 支持」「已修(2026-10-11)」) |
-| 调试类型改名 `groovy-dap`(**破坏性**:`launch.json` 必须写 `"type": "groovy-dap"`) | 0.1.31(待发) | 真实窗口(扩展能激活);合并时 `lib/explain-exception.js` 的 tracker 也跟着改 |
+| 调试类型改名 `groovy-dap`(**破坏性**:新配置写 `"type": "groovy-dap"`;旧 `"type": "groovy"` 在没有别的扩展占着 `groovy` 时靠兼容别名继续可用,装了 Code Groovy 的机器上仍必须改) | 0.1.31(待发) | 真实窗口(扩展能激活);合并时 `lib/explain-exception.js` 的 tracker 也跟着改 |
 | `continued` 事件先于 resume(其它线程不再卡在 PAUSED)、冷 JVM 下 stepIn 的 juli 排除、逐变量读局部变量 | 0.1.31(待发) | `verifyProtocol` + 真实窗口(`continued`);juli:7 / 8 冷热 trace(合并前) |
 
 ### 最容易再踩一次的几个坑
@@ -265,7 +265,7 @@ owner 问过。结论是**不要再做一个聊天框**(那是 Copilot 的活),�
 - **从本地移植到 origin/dev 的 server 上**(各有测试):`org.apache.juli.*` 加进 `DEFAULT_STEP_EXCLUDES`;`continued{allThreadsContinued}` 在响应之后、**resume 之前**发,`onContinue` 与 `onStep` 都发(原来 `onContinue` 是 resume 之后);局部变量逐个 `frame.getValue`、只跳过 `InconsistentDebugInfoException`;求值遇到这个异常报 `'<name>' is not readable at this point ...`(origin/dev 的 `resolveRoot` 原来吞掉它并误报「no local, field or request attribute named」);`PathEvaluator.rejectUnsupported` 与括号匹配识别引号(`params['user-id']`、`map['a/b']`、`headers['x?y']`);`DapChannel` 接缝、`LoopbackChannel`、整个 `server/src/test`、`verifyProtocol` JavaExec、`scripts/build-server.js` 的错误报告。
 - **测试数**:合并前本地 `verifyProtocol` 有 46 个块、45 项通过;合并后 45 个块、**44 项通过 / 0 失败**。删掉或改写的本地检查:`PathExpression` 文法表(被「调用 / 运算符 / 闭包按名字拒绝」+「引号内字符不算运算符」取代);200 元素上限的求值检查(origin/dev 的求值没有这个上限);「过期帧是错误不是异常」(单元层;e2e 里仍有 stale frame 检查);`ValueParser` 的 100 多行字面量表(十六进制、`L` 后缀、转义、范围措辞……origin/dev 的 `ValueFactory` 没有这些,换成 32 行 `ValueFactory` 表);「装箱 `Integer` 被拒」「`Reference` 被拒」两条拒绝检查(origin/dev 允许,改成正向检查);合成名 / `final` 字段 / 被截断元素的拒绝(origin/dev 的代码里没有这些,`final` 由 JVM 拒绝,e2e 里验过);`setExpression` 检查(延后);JDI `InvalidTypeException` / `ClassNotLoadedException` 的专门措辞(origin/dev 统一报 `could not set ...: <异常>`)。新增:引号内运算符字符、不可读局部变量的求值消息、`valueOf` 钉住、`continued` 覆盖 `stepIn`、条件 / hit count / logpoint 的 e2e。
 - **合并后的脚本驱动复验**(2026-10-12,JDK 21.0.10,jar 101334 字节;scratchpad 里的 S1–S10 harness,`sourcePaths` 取扩展 `defaultSourcePaths` 的 artefact 目录;每个场景冷启动一次 `bootRun --debug-jvm`,S3、S6 另有热的第二遍):**两个靶子的 file:line 序列相同**(`dbgtarget` 7.2.3 与 `dbgtarget8` 8.0.0;除闭包编号 `closure2` 对 `closure3`;7 上的 `/nested` 返回 404,S6 / S7 不适用)。与合并前记录(本地 adapter)比:S4、S5a、S5b、S9 相同(8 上 S7 也相同),**其余不同,且是 origin/dev 的 step over / step into 设计带来的**:S1 方法返回后停在调用方**下一行**(10),不是调用行中段(9);S2 `stepIn` **能进入** `@Transactional` 方法(`$tt__transactionalMethod` 21、22、`closure:23`、25),此前是已知限制;S3 / S6 `stepIn` 进 `.each` 闭包停在 `closure:23`(冷、热一致),但**只停第一次迭代**(i=1),此前 i=1,2,3 都停;S10 同 S1。S3 一个请求含断点共停 5 次(合并前记录是 7 次)。**用户已于 2026-10-12 明确接受这一 stepIn 行为变化。**冷 JVM 下 stepIn 仍进闭包(`closure3.doCall:23`)。stepIn 要求 `sourcePaths` 是扩展传的源码目录。**注意**:harness 若把应用根目录当作唯一的 `sourcePaths`,origin/dev 的 step into 什么调用都不进(包过滤器是按 `sourcePaths` 下的目录名建的);扩展本身传的是 artefact 目录,不受影响。
-- **没验证**:真实 VSCode 窗口(合并后的 evaluate / 改值 / 条件 / logpoint / 数据断点 / GSP / 异常解释 / 状态栏 / launch 配置);F5、F10/F11、hover;Windows / Linux。GSP、数据断点没有任何 server 侧测试覆盖到合并后的行为(node 单元测试 15 项,2026-10-12 移除 QA 后实跑全部通过:异常解释 + GSP 语法;GSP 5 项要 `VSCODE_BUILTIN_EXTENSIONS`)。
+- **没验证**:真实 VSCode 窗口(合并后的 evaluate / 改值 / 条件 / logpoint / 数据断点 / GSP / 异常解释 / 状态栏 / launch 配置);F5、F10/F11、hover;Windows / Linux。GSP、数据断点没有任何 server 侧测试覆盖到合并后的行为(node 单元测试 23 项,2026-10-12 加兼容别名后实跑全部通过:异常解释 + GSP 语法 + 兼容别名 8 项;GSP 5 项要 `VSCODE_BUILTIN_EXTENSIONS`)。
 
 ## 已知缺陷
 
@@ -333,7 +333,20 @@ Grails 的 S1–S10 矩阵是 scratchpad 里手动的 harness,不在 `build` 里
    `groovy-dap`(`package.json` 与 `extension.js` 的 `DEBUG_TYPE`);`activate()` 现在能扛过这类冲突
    (窄 try/catch,写到「Grails - Debug」output channel,弹一条点名冲突扩展的警告)。设置
    `grails.debug.adapter` 的取值仍是 `groovy` / `java`,`groovy` 映射到 `groovy-dap`。
-   **用户可见**:`launch.json` 必须写 `"type": "groovy-dap"`。
+   **用户可见**:新的 `launch.json` 写 `"type": "groovy-dap"`。
+   **兼容别名(2026-10-12,未提交)**:0.1.29 及以前的 `"type": "groovy"` 在没有别的扩展占着 `groovy` 时继续可用 ——
+   `package.json` 多一条 `type: "groovy"` 的 debugger(label 带 legacy;同 `languages` / `configurationAttributes`;
+   **没有** `initialConfigurations` / `configurationSnippets`,所以 Select debugger 与 launch.json 模板仍只给
+   `groovy-dap`)与 `onDebugResolve:groovy`;`extension.js` 的 `registerLegacyDebugType` 用同一个
+   `makeAdapterFactory` 与同一个解析逻辑注册 `groovy`(解析时在「Grails - Debug」打一行建议改用 `groovy-dap`);
+   `isGroovyDebugType` 让双启动保护、`grails.attach` 的重复附加检查、launch 会话结束时停应用都认两个名字。
+   **`groovy` 已被别的扩展占着时**:注册抛 `can only be registered once`,只往「Grails - Debug」写一行
+   (`legacy debug type "groovy" is owned by another extension; use "type": "groovy-dap" in launch.json`),不弹窗,
+   也**不**给 `groovy` 挂解析器和异常解释 tracker(免得碰别人的会话);`groovy-dap` 那条警告逻辑不变。
+   `registerExceptionExplainer(vscode, context, debugTypes)` 多了第三个参数(默认 `['groovy-dap']`)。
+   **只用 mock 的 vscode 验证**(`test/unit/legacy-debug-type.test.js`,8 项)。**未验证**:真实窗口里 Select debugger 在两个
+   debugger 条目下长什么样;VS Code 是否接受两个指向同一 adapter 的 debugger 声明;没装 Code Groovy 的机器上
+   `groovy` 配置是否真的起会话。
    提交 fd9e1db。**未验证**:新类型下 `.groovy` 断点在所有环境里都能被接受;Code Groovy 是否仍会干扰 F5。
    下拉里那条 "Groovy / Grails..." 是 Code Groovy 自己的,不是我们的。
    另:Code Groovy 自己的 Gradle init script(classpath resolver)在 Grails 项目上会在**它自己的**
@@ -506,7 +519,7 @@ Grails 项目上验过,但同样没有从 VSCode UI 走过一遍。
 pnpm install
 npm run build:server   # 必须:构建 dist/groovy-dap.jar,否则调试 adapter 起不来
 # F5 启动 Extension Development Host
-pnpm test              # Node 单元测试(15 项;其中 GSP 的 5 项要 VSCODE_BUILTIN_EXTENSIONS=<VS Code>/Contents/Resources/app/extensions)
+pnpm test              # Node 单元测试(23 项,含 mock vscode 的兼容别名 8 项;其中 GSP 的 5 项要 VSCODE_BUILTIN_EXTENSIONS=<VS Code>/Contents/Resources/app/extensions)
 pnpm test:editor       # 独立 Grails 靶子 + 隔离 VS Code + Playwright(playwright-core 只在这里用,devDependency,不随 vsix 发布)
 pnpm lint              # 0 error / 10 warning(都是 extension.js 里没用的 `err`)
 (cd server && ./gradlew verifyProtocol)   # server/ 的无依赖检查(44 项);`./gradlew build` 也会跑

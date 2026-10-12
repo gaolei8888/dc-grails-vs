@@ -8,10 +8,13 @@ built-in debug adapter work done in parallel.
 
 ### Breaking
 
-- The debug type is now `groovy-dap`, not `groovy`. A `launch.json` entry with
-  `"type": "groovy"` must be changed to `"type": "groovy-dap"`. (Another Groovy
-  extension may already own the type `groovy`, and VS Code allows one debug adapter
-  per type.) The `grails.debug.adapter` setting keeps its values (`groovy` / `java`).
+- The debug type is now `groovy-dap`, not `groovy`; new launch configurations and the
+  Select debugger entry use `groovy-dap`. A `launch.json` entry with
+  `"type": "groovy"` (0.1.29 or earlier) still works as a compatibility alias, see
+  Fixed, **except on machines with another Groovy extension that owns `groovy`**
+  (Code Groovy does; VS Code allows one debug adapter per type). There the entry must
+  be changed to `"type": "groovy-dap"`. The `grails.debug.adapter` setting keeps its
+  values (`groovy` / `java`).
 
 ### Added
 
@@ -48,6 +51,14 @@ built-in debug adapter work done in parallel.
 
 ### Fixed
 
+- `"type": "groovy"` in a `launch.json` written for 0.1.29 or earlier works again as a
+  compatibility alias of `groovy-dap`: same adapter, same attach and launch handling,
+  same exception explainer. It is registered only when no other extension owns the
+  `groovy` type; otherwise the alias is skipped with one line in the "Grails - Debug"
+  output channel (no dialog) and `groovy-dap` is the only name. The alias is listed as
+  "Grails (Groovy debugger, legacy `groovy` type)" and offers no templates, so
+  Select debugger and new `launch.json` files still suggest only `groovy-dap`.
+  Checked with a mocked VS Code only, not in a real window.
 - Activation no longer fails when another extension already owns the debug type
   `groovy`; the adapter is registered as `groovy-dap`, and the exception explainer
   follows it.
