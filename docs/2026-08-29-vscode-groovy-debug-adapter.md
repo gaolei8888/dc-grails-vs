@@ -232,7 +232,8 @@ setTimeout(async () => {
 
 ### 6.3 要加什么
 
-`package.json` 注册新的 debug type:
+`package.json` 注册新的 debug type(下面是设计时的写法;实际落地的类型名是 `groovy-dap`,因为别的
+Groovy 扩展可能已经占了 `groovy`,而 VS Code 每个类型只允许一个 adapter factory):
 
 ```json
 "contributes": {
@@ -461,7 +462,7 @@ pause / disconnect / evaluate(可选)
 
 ### 7.3 T1 实现现状(2026-08-30)
 
-`server/` 已建,Java 17,**零第三方依赖**,产物 `dist/groovy-dap.jar` 约 44 KB。
+`server/` 已建,Java 17,**零第三方依赖**,产物 `dist/groovy-dap.jar` 当时约 44 KB(2026-10-12 并入 origin/dev 之后是 101334 字节)。
 
 ```
 server/
@@ -473,17 +474,21 @@ server/
     dap/Json.java                  够用的 JSON 读写(不引 Gson:vsix 体积)
     dap/DapTransport.java          Content-Length 分帧,按字节读,send 加锁
     jdi/SourceRef.java             文件 → 类名前缀 + 「这行有没有可执行代码」
-    jdi/BreakpointBinder.java      §4 算法
+    jdi/BreakpointBinder.java      §4 算法 + logpoint / 命中次数(§7.5)
+    jdi/HitCondition.java          命中次数表达式(>、>=、=、<、<=、%、裸数字)
     jdi/StopDeduper.java           §7.2 ① 的命中侧去重
-    jdi/Variables.java             Reference 解包 / 合成变量过滤 / 装箱值展开
+    jdi/Variables.java             Reference 解包 / 合成变量过滤 / 装箱值展开 / GORM trait 字段过滤
+    jdi/PathEvaluator.java         hover / watch / logpoint 的路径求值(只读不跑)
+    jdi/MapReader.java             HashMap 与 ArrayList 的字段走法
+    jdi/GrailsWebScope.java        ThreadLocal 里的 GrailsWebRequest —— params/request/response/session
     jdi/SourceLocator.java         栈帧 → 源文件(反向映射,本来就是通的)
 ```
 
-**已实现的 DAP 请求**:`initialize` / `attach` / `setBreakpoints` /
-`setExceptionBreakpoints`(空实现)/ `configurationDone` / `threads` / `stackTrace` /
-`scopes` / `variables` / `continue` / `next` / `stepIn` / `stepOut` / `pause` /
-`disconnect` / `terminate`。事件:`initialized` / `stopped` / `continued` /
-`breakpoint` / `terminated` / `output`。
+**已实现的 DAP 请求**:`initialize` / `attach` / `setBreakpoints`(含 `logMessage` 与
+`hitCondition`)/ `setExceptionBreakpoints` / `exceptionInfo` / `configurationDone` /
+`threads` / `stackTrace` / `scopes` / `variables` / `evaluate` / `continue` / `next` /
+`stepIn` / `stepOut` / `pause` / `disconnect` / `terminate`。事件:`initialized` /
+`stopped` / `continued` / `breakpoint` / `terminated` / `output`。
 
 **实机验证**(空白 Grails 7.2.3 应用 + 一个照着 VSCode 说话的 DAP 客户端脚本,非编辑器):
 
@@ -535,7 +540,7 @@ server/
    `org.springframework.{transaction,aop,cglib}.*`。整份 filter 可由 attach 参数
    `stepFilters` 覆盖。
 
-#### 遗留缺陷:从「行中段」发起的 step over 会冲出整个方法体
+#### 已修(2026-09-04):从「行中段」发起的 step over 会冲出整个方法体
 
 已用 `trace: true`(attach 参数,把每个 step 事件的 **bci 与帧深度**都打出来)把边界条件夹出来了。
 
@@ -594,9 +599,9 @@ STOP  index:9  bci 104 depth 56       ← 第 9 行的「中段」
 十几个停顿才回到调用方。)
 
 **影响**:step over 走到方法末行、返回调用方之后,再按一次会跳过调用方该行之后的剩余代码。
-**未修**。~~用 `STEP_MIN` 把位置从行中段推到行首~~ —— 这条方向随「行中段」假设一起作废。
+**未修**(这是 2026-09-04 之前的状态;当天 step over 改成断点拼出来的,见本节上面「已修(2026-09-04)」与下面「修法(2026-09-04)」)。~~用 `STEP_MIN` 把位置从行中段推到行首~~ —— 这条方向随「行中段」假设一起作废。
 
-**2026-09-01:回到真实 Grails 靶子做了,仍然复现不出来。** 新建空白 Grails 7.2.3 rest_api
+**2026-09-01:回到真实 Grails 靶子做了,仍然复现不出来。**(下面这些实验跑的是 JDI 的 step over;并入 origin/dev 之前的 adapter。) 新建空白 Grails 7.2.3 rest_api
 (`~/Documents/work/dc/dc-grails-vs-target/dbgtarget`),类级 `@Transactional` service + controller
 第 10 行调它、第 11、12 行在后面,用 `docs/experiments/2026-08-31-step-over-midline/dapclient.js`
 (DAP over stdio)驱动 `bootRun --debug-jvm`:
@@ -617,6 +622,27 @@ STOP  index:9  bci 104 depth 56       ← 第 9 行的「中段」
 JDK 21 与 25)。原始观察缺了当时靶子的形状与操作序列,没法回溯。**再遇到时**必须同时留下
 `trace: true` 的完整 `step event:` 序列 + 该方法的 `javap -c -l` LineNumberTable —— 只有这两样
 对齐才能区分「跳过了行」与「该方法确实结束了」。
+
+**修法(2026-09-04):不再用 JDI 的 step 做 step over。**
+
+第三次尝试刻画触发条件时又被推翻了:改成「行中段用断点、行首用 JDI step」之后,**从行首发起的
+那一步同样一个事件都没产生**(`index:10` → 无事件,而 HTTP 响应完整,说明第 11 行确实执行了)。
+所以「行首正常、行中段坏」这个划分也是错的 —— 在这个目标上 JDI 的 step over 本身就不可靠,
+而我三次都没能说清它什么时候坏。
+
+于是不再依赖它:**step over 一律用断点表达**。step over 的语义就是「停在本帧下一个到达的行,
+或者方法返回」,这两半都能直接说出来 —— 给当前方法**每一条其他行**的首个位置下一次性断点
+(线程过滤)+ 一个方法退出请求,谁先触发就是答案。
+
+两个细节:
+
+- **方法退出事件在帧弹出之前触发**,所以退出时**不上报**(否则会在刚停过的返回行上再停一次),
+  而是把断点组重新武装到调用方帧上。
+- 调用方可能是没有行号表的包装帧 —— Grails 在事务方法和真正的调用者之间垫了三层。所以要
+  **向上爬到最近一个既有行号表、又属于项目代码的帧**。
+
+实测序列:`20 → 21 → 22 → 28 → 29 → index:10 → index:11`,无重复、无 `line 0` 帧,
+第 22 行的 `each` 闭包仍然整体跳过。
 
 #### step filter:两层,而不是一张黑名单
 
@@ -660,7 +686,7 @@ index:8 (断点) → index:8 → index:9 → index:9 → index:10 → SpikeServi
 断点。
 
 **extension 侧接线**:`package.json` 加了 `contributes.breakpoints`(language `groovy`,
-**没有这一条 VSCode 根本不允许在 .groovy 上打断点**)、`contributes.debuggers`(type `groovy`)
+**没有这一条 VSCode 根本不允许在 .groovy 上打断点**)、`contributes.debuggers`(type 当时是 `groovy`,现为 `groovy-dap`)
 和两个设置(`grails.debug.adapter` 默认 `groovy`,`grails.debug.javaPath`);`extension.js`
 注册 `DebugAdapterDescriptorFactory`,用 `java --add-modules jdk.jdi -jar dist/groovy-dap.jar`
 拉起,并用 `DebugConfigurationProvider` 自动填 `sourcePaths`。
@@ -702,11 +728,502 @@ index:8 (断点) → index:8 → index:9 → index:9 → index:10 → SpikeServi
 **还没做的 T1 余项**:
 
 1. `stepIn` / `stepOut` 在编辑器里没按过(step over 已验)。`stepOut` 连 harness 都没验过。
-2. **`next` 与 `stepIn` 已实机验证,`stepOut` 仍只经过编译**;有一个已定位、未修的缺陷:
-   **从行中段发起的 step over 会冲出整个方法体**(见上方「遗留缺陷」);`stepIn` 步不进
-   `@Transactional` 方法(见上方「step filter」)。
-3. `evaluate` / 条件断点 —— 属 T2。
+2. `stepIn` 步不进 `@Transactional` 方法(见上方「step filter」)。step over 的那条缺陷
+   已修,见上方「已修(2026-09-04)」。
+3. 条件断点(Condition 框)—— 属 T2。**Hit Count 与 Log Message 不属于 T2**:两者都不需要
+   编译表达式,已实现,见 §7.5。
 4. 多 `EventSet` 并发命中(多线程同时停)的行为未验。
+
+### 7.5 Logpoint 与命中次数(2026-09-05)
+
+两件都不需要「在目标 VM 内编译并执行 Groovy」,所以不必等 T2 的表达式求值:
+
+- **命中次数**是纯算术。`HitCondition` 解析 `>`/`>=`/`=`/`<`/`<=`/`%` 加一个数字,裸数字
+  按 `>=` 读(VSCode 文档里 hit count 的定义就是「命中多少次之后才中断」)。
+- **Logpoint**的 `{表达式}` 用的是已有的 `PathEvaluator`(§ 见 0.1.8 的路径读取),同样只读
+  不跑;读不了的表达式把原因印在值的位置,不是消失。
+
+两处实现上的选择,都是被前面的实测逼出来的:
+
+1. **计数发生在去重之后。** Groovy 一行编译两份、共用同一行号(§7.2 ①),若在 `BreakpointEvent`
+   上直接计数,`=3` 这样的条件会数到用户根本没看见的那一半上。所以顺序固定为
+   `StopDeduper.shouldReport()` → `BreakpointBinder.onHit()`,计的是「本来会停下来的次数」。
+2. **集合在日志行里要展开。** 面板可以显示 `ArrayList (id=14513)` 让人点开,一行文本不行 ——
+   `sum=java.util.ArrayList (id=14513)` 等于什么都没说。`Variables.plain()` 因此走 `elementData`
+   / `table[]` 把内容写出来,上限 8 项、2 层。
+
+实测(靶子同上,`runcase.sh` + `LOGPOINTS` / `HITCONDS` 两个环境变量):
+
+| 验的东西 | 结果 |
+|---|---|
+| 行 25(嵌套闭包体)的 logpoint 打印 4 次、不停 | 通过 |
+| `{inner}`(外层闭包捕获,`Reference` 装箱) | 通过 —— `inner=104`,自动解包 |
+| `{doubled}` 逐次增长 | 通过 —— `[]` → `[105]` → `[105, 106]` → `[105, 106, 209]` |
+| `{params}` | 通过 —— `[controller:spike, action:index]` |
+| `{base.foo()}` | 通过 —— 原样印出拒绝理由,不是「没有该字段」 |
+| 行 25 `%3`(共 6 次命中) | 通过 —— 只停在第 3 次(i=2,j=1)与第 6 次(i=3,j=2) |
+| 行 23 `>=3` / 裸 `3`(共 3 次命中) | 通过 —— 都只停在 i=3 |
+| 行 25 `=4` | 通过 —— 只停一次,i=2、j=2,正是第 4 次 |
+| 不合法的 hit count(`abc`) | 通过 —— 断点仍绑定并照常停,`message` 里说明没读懂 |
+
+**未验**:编辑器里没试过(harness 直接发 `logMessage` / `hitCondition` 字段,和 VSCode 发的
+是同一个 DAP 形状,但 UI 那一层没走过)。
+
+### 7.6 stepOut 复验与 stepIn 进入 `@Transactional`(2026-09-05)
+
+#### stepOut:是好的,之前只是没验过
+
+`runcase.sh ... stepOut`,断点下在嵌套闭包体(行 25,用 `HITCONDS='25:=1'` 让它只停一次,
+否则下一次 `j` 迭代会先命中,把 step 事件盖掉):
+
+```
+25(内层闭包)→ 24(外层闭包)→ 22($tt__transactionalMethod)→ index:9(controller)
+```
+
+中间三个没有行号表的包装帧(`$_transactionalMethod_closure2`、`transactionalMethod`、
+`transactionalMethod$0`,全是 `line -1`)被正确跳过。
+
+**从最外层的项目帧再往外 stepOut 不产生任何事件**,请求直接跑完 —— 形状和 §7.3 那个 step over
+缺陷一样。我据此猜「step 请求被留在线程上,该线程从此永久单步」,并**实验证伪**:随后三次请求
+151 / 148 / 149 ms,没有多余停顿,也没有新的 step 事件。既然量不出代价,就不改。行为上它等同于
+continue —— 你自己的代码之上本来就没有可停的地方。
+
+#### stepIn:改成和 step over 同一套办法
+
+改之前(实测,不是文档里那句「步不进」那么轻):
+
+```
+STOP 1  controller:9   断点
+STOP 2  controller:9   ← stepIn 回到同一行,整个事务方法已经跑完
+STOP 3  controller:10  ← 还是没进去
+STOP 4  plainMethod:34 ← @NotTransactional 的能进
+```
+
+原因和 step over 那条是同一个:`@Transactional` 的入口要穿过事务模板,JDI 的 STEP_INTO
+在调用行上就算完成了。**「进入了项目里的某个方法」是目标 VM 的一个事实,不是靠单步能凑出来的**,
+直接问它就行 —— 一个 `MethodEntryRequest`,线程过滤 + 项目包过滤,加上 step over 已经在用的
+「本方法其余行的断点 + 方法退出」,谁先到算谁。
+
+包过滤来自目录:源根下的一级子目录名就是包名(`grails-app/services/dapspike` → `dapspike.*`)。
+**不能不加过滤** —— 一次 Grails 请求要进入几万个方法。取不到包名时退回 JDI 单步。
+
+没有行号表的方法(`transactionalMethod`、回调闭包、`transactionalMethod$0`)在到达时被跳过,
+请求**保持武装**继续等,所以三层包装不需要认名字。改后:
+
+```
+controller:9 → $tt__transactionalMethod:20 → 21 → 22 → closure5.doCall:23
+```
+
+最后一步是在 `(1..3).each { i ->` 上 stepIn,**进了闭包体**。构造器没有造成多余停顿。
+
+#### 顺带抓出来的一个真缺陷:每行只装第一个 location
+
+回归 `@NotTransactional` 的 stepIn 时发现 `plainMethod` 的**第 35 行被整个跳过**,直接回到
+controller:11,而且 trace 里那一段一个事件都没有。
+
+`armLineStepAt` 当时按行号去重,每行只装第一个 location —— 正是 §7.2 ③ 记过的坑:行 34 映射到
+bci 26 与 73,**只有 73 会执行**。装第一个就是装了那条永远不跑的路径。
+
+改成**每行的每个 location 全装**(与 `BreakpointBinder` 同一条规则)。重复停顿不会发生:第一次
+到达就 `clearStepAssist()` 把整组删掉,同一个 `EventSet` 内也只认第一个断点事件。回归后
+step over 的序列与 0.1.9 逐条相同。
+
+**这条缺陷 0.1.9 就存在**,只是当时验的 `$tt__transactionalMethod` 每行的第一个 location 恰好
+就是会执行的那个,所以没露出来。
+
+### 7.7 条件断点:比较能做,表达式不做(2026-09-05)
+
+完整的条件要在目标 VM 内编译执行 Groovy —— 那仍然是 T2。但真实世界里输入框里写的东西
+基本都是比较,而比较的两边不是路径就是字面量,路径读取(§ 0.1.8 的 `PathEvaluator`)早就有了。
+
+`Condition` 因此只做比较:`==`、`!=`、`>`、`>=`、`<`、`<=`,两边各自先当字面量解析
+(数字 / 引号字符串 / `true` / `false` / `null`),不是字面量就当路径求值。`==` 按值比,
+和 Groovy 的语义一致。找运算符时要跳过引号和方括号里的内容(`params['a>b'] == 1`),
+并且单字符运算符要向后看一位,否则 `>` 会先咬掉 `>=` 的一半。
+
+**读不了的条件要停,不能不停。** 当成 false 的话就是一个永远不响的断点,看起来像调试器坏了;
+当成 true 至少停下来并把理由印出来,用户知道该改什么。语法层面读不懂的(不是比较)在
+`setBreakpoints` 时就写进断点的 `message`,UI 里能看到。
+
+**顺序是:去重 → 条件 → 计数 → logpoint/停。** 条件在计数之前,因为「条件为真的第三次」
+才是同时设了两个框的人要的意思。
+
+实测:
+
+| 条件 | 结果 |
+|---|---|
+| 行 23 `i == 2`(该行跑 3 次) | 只停 1 次,`i=2` |
+| 行 25 `j > 1`(该行跑 6 次) | 停 3 次,全是 `j=2` |
+| 行 23 `params.action == 'index'` | 停住 —— 字符串比较 + Grails scope 里的名字(`params` 不是局部变量) |
+| 行 25 `j.toString() == '1'` | 印出「method calls are not supported」并照常停 |
+| 行 23 `i > 1` + 命中次数 `=2` | 只停 1 次,`i=3`,即条件为真的第二次 |
+
+顺带把 `groovy.lang.Reference` 的解包和装箱值的读取抽成了 `jdi/Values.java`:变量面板、hover、
+logpoint、条件四处都要做这两件事,各留一份装箱类型表迟早会不一致 —— 显示成一个样、比较成另一个样。
+`PathEvaluator` 现在在每一步和返回时都解包,所以 `x.name` 在 `x` 是被闭包捕获的局部变量时也能走通。
+
+### 7.8 setVariable(2026-09-05)
+
+写局部变量、字段、数组元素、已存在的 map 项。写入本身都是 JDI 的直接写,不经过应用代码;
+唯一的例外是**造装箱值**,见下。
+
+三件被实测逼出来的事:
+
+1. **闭包捕获的局部变量要写进 `Reference` 里,不能覆盖它。** 覆盖等于换了个盒子,闭包手里还是
+   旧的,程序看不到这次修改。
+2. **造装箱值必须调用 `valueOf`,而调用会让线程先跑起来 —— 之前拿到的 `StackFrame` 全部作废。**
+   实测报 `InvalidStackFrameException: Thread has been resumed`,出现在写一个类型为
+   `java.lang.Integer` 的局部变量时(Groovy 里绝大多数局部变量都是这个类型)。所以顺序必须是
+   「先造值,再重新取帧,最后写」。`LocalVariable` 不受影响,它属于方法不属于帧。
+   案例 B(写 `Reference` 的 `value` 字段)没踩到,因为 `ObjectReference` 不会因 resume 失效。
+3. **`owningThread()` 不是「可以用来调用的线程」**,是「持有该对象监视器的线程」,通常为 null。
+   第一版用它去拿 VM,直接 NPE。停下来的那个线程必须显式传进去。
+
+为什么允许调 `valueOf`:JDI 不接受把 int 放进 `java.lang.Integer` 的槽,而 Groovy 几乎全是装箱的,
+不调就等于这个功能改不了任何东西。范围限死在 8 个 JDK 装箱类的 `valueOf`(不加锁、无副作用),
+且 `INVOKE_SINGLE_THREADED`。**读的那一侧仍然一行代码都不跑** —— hover、logpoint、条件、变量面板。
+
+实测(靶子同上,`SETVAR` 环境变量,证据是 HTTP 响应而不是面板):
+
+| 写什么 | 结果 |
+|---|---|
+| 行 20 `seed`(int 原始类型)4 → 7 | 响应变成 `base:107`、`doubled:[108, 109, 215, 216, 322, 323]` |
+| 行 21 `base`(装箱 + `Reference`)104 → 999 | 响应变成 `doubled:[1000, 1001, 1999, 2000, 2998, 2999]` |
+| 行 25 `j`(闭包帧的装箱参数)1 → 50 | 响应第一项变成 `154`(= 104 + 50),其余不变 |
+| `this` | 拒绝 |
+| `seed = abc` | 拒绝,「is not a whole number」 |
+| Grails scope 的 `params = 1` | 拒绝,JDI 的类型错误原样带出 |
+
+### 7.9 GSP 断点 spike(2026-09-05)—— 可行,但不是靠 SMAP
+
+**前提是错的。** 一直以为 GSP 断点需要 JSR-45 / SMAP,实测:生成的页面类
+`availableStrata()` 只有 `[Java]`,**没有第二个 stratum**。JDI 的 JSR-45 支持在这里一点用没有。
+
+GSP 编译器确实生成了行号映射,但放在 `___LineNumberPlaceholder` 类的 `@LineNumber` 注解里
+(`GroovyPageParser.addLineNumbers()`),而 **JDI 完全没有读注解的 API**。这条路也堵死。
+
+#### 三次猜错,最后靠 ClassPrepare 问出来
+
+1. 猜类名含 `gsp_` —— 扫不到。
+2. 猜有类的 `sourceName()` 以 `.gsp` 结尾 —— 一个都没有。
+3. 猜 `GroovyPageMetaInfo` 没被加载(第一次扫的时候确实报「not loaded」)。
+
+改成挂一个无过滤的 `ClassPrepareRequest`,把渲染期间准备的每个类名打出来,答案立刻出现:
+
+```
+PREPARED C__Users_gaole_..._dapspike_grails_app_views_spike_page_gsp
+         source=C__Users_gaole_..._dapspike_grails_app_views_spike_page_gsp
+PREPARED ..._page_gsp$_run_closure1
+PREPARED ..._page_gsp$_run_closure2$_closure4
+```
+
+**类名就是 .gsp 的绝对路径,把 `:` `/` `\` `.` 全换成下划线**,而 `sourceName()` 返回的是同一个
+字符串 —— 不是文件名,更不是 `.gsp`。前两次扫描因此必然扫不到。闭包类照例同名同源。
+
+#### 映射在哪里
+
+`org.grails.gsp.GroovyPageMetaInfo` 有一个活实例,两个**普通字段**:
+
+- `Class<?> pageClass` —— 生成的页面类
+- `int[] lineNumbers` —— 长度固定 1000,**下标是生成行,值是 GSP 行**
+
+靶子的 10 行 GSP 实测拿到:
+
+```
+22->3  23->4  24->4  25->4  26->4  27->5  28->5  29->6  30->6
+31->7  32->7  33->8  34->8  35->9  36->9  37->9   (38 起回落到 1,再往后全是 0)
+```
+
+对照源码,第 6 行是 `<p>doubled: ${item * 2}</p>`,映射到生成行 29 / 30。**两个字段都是直接读,
+不需要跑代码**,和现在的读取侧规则一致。
+
+#### 所以实现路径是
+
+1. `.gsp` 路径 → 类名:路径里的 `:` `/` `\` `.` 换成 `_`(不需要查任何注册表)。
+2. 类加载后,从 `GroovyPageMetaInfo` 的活实例里按 `pageClass.name()` 找到对应的 `lineNumbers`。
+3. GSP 第 N 行 → 所有满足 `lineNumbers[G] == N` 的生成行 G → 对该类及其闭包类
+   `locationsOfLine(G)` —— **§4 的算法原样复用**,只是多一层查表。
+4. 栈帧回映射反过来查:生成行 → `lineNumbers[G]` → GSP 行,`sourceName()` 反解出路径。
+
+#### 未定的几件事(真做的时候要先量)
+
+- **下标是 0 基还是 1 基**没有确认。上面的数据两种解释都说得通,差一行就全错。
+- **页面类要到第一次渲染才编译**,所以打开编辑器就下的断点必然先是空心的,要靠
+  `ClassPrepareRequest` 补装 —— 和闭包那条路一样,但**还要等 `lineNumbers` 填好**,
+  它是不是在 prepare 时就已经就绪没有验。
+- **预编译的 GSP(生产用 `compileGsp`)是另一条路**:类名形态不同,行号来自
+  `LINENUMBERS_DATA_POSTFIX` 那个资源文件而不是内存里的数组。本次只验了开发模式。
+- 靶子是 `rest-api` profile,GSP 是**额外加进去的**(`org.apache.grails:grails-gsp`),
+  并且生成的 REST 映射会把 `/spike/page` 送去 `show(id: 'page')`,所以加了一条
+  `get "/gsppage"` 专用映射。真实的 web profile 应用不需要这一步。
+
+**结论:可以做,不需要 SMAP,但它是独立的一块**(路径→类名、metaInfo 查表、双向行号映射、
+预编译分支),不是在现有绑定器上改几行。
+
+### 7.10 GSP 断点实现(2026-09-06)
+
+§7.9 列的三件未定的事全部量掉了,两件和猜的不一样。
+
+#### 1. 下标是 0 基
+
+用 `grails.views.gsp.keepgenerateddir` 把生成的 Groovy 留在磁盘上,直接对照:
+
+```
+生成行 14  h(0)                                            ← GSP 第 1 行 <html>
+生成行 22  invokeTag('captureHead','grailsLayout',2,[:],1)  ← GSP 第 2 行
+生成行 26  expressionOut.print(evaluate('title', 4, it)…)   ← GSP 第 4 行
+生成行 30  expressionOut.print(evaluate('item * 2', 6, …))  ← GSP 第 6 行
+```
+
+矩阵是 `… 1(idx13) … 2(idx21) … 4(idx25) … 6(idx29) …`,即 **`lineNumbers[G-1]` 是生成行 G 的
+GSP 行**。生成行 14 与 22 两个点各自排除 1 基;其余的点两种解释都成立,靠它们分不出来。
+
+#### 2. prepare 时行号已就绪,但 `pageClass` 还是 null
+
+用 SUSPEND_ALL 的 `ClassPrepareRequest` 停在页面类 prepare 的那一刻:
+
+```
+### PREPARED …_page_gsp
+        at this prepare: 1 instance(s)
+          pageClass   = null
+          lineNumbers = int[1000] 1 1 … 2 2 … 3 4 4 4 4 5 5 6 6 7 7 8 8 9 9 9 1 1
+```
+
+metaInfo 先建好矩阵,再回填类。**所以「此刻唯一那个还没回填 pageClass 的 metaInfo,就是刚
+prepare 的这个类的」** —— 实现就按这条走,并且在有多个未回填时拒绝猜(闭包类稍后 prepare,
+那时 `pageClass` 已就位,是第二次机会)。实测第一次渲染就绑上了。
+
+#### 3. 一个页面行会停两到三次 —— 必须收敛到一次
+
+这是实现时才暴露的,§7.9 没预见。第一版把页面行映射到的**每个**生成行、在**每个**拥有它的类上
+全装,结果:
+
+```
+GSP 第 6 行(在 <g:each> 里)  → closure2:30 → closure6:30 → closure2:31   一次迭代停 3 次
+GSP 第 4 行                   → run:23 → closure2:25                      一次渲染停 2 次
+```
+
+第 6 行的两个来源是 `evaluate('item * 2', 6, it) { return item * 2 }` —— 一个调用加一个闭包,
+**同一生成行、两个类**;第 4 行则是同一页面行被摊到 `run` 和 body 闭包的**不同**生成行上。
+
+先试了「内层类的行若被外层类也拥有就跳过」,只解决第 6 行那种。最后换成一条更简单也更普适的:
+
+> **一个页面行只绑一处:拥有它任一生成行的最外层类(`$` 最少),取该类拥有的最小生成行。**
+> 后来出现的更优候选会替换先前的,所以不依赖类的 prepare 顺序;已经持有请求的类总是重新装,
+> 那是「同名类再次 prepare」,即 devtools 重启。
+
+外加把 `StopDeduper` 比较的行改成**用户看到的行**(GSP 是页面行)—— 同一方法内一个页面行对应
+多个生成行,正是 §7.2 ① 那个重复,高了一层。
+
+实测(10 行的页面,`<g:each>` 三次迭代,连打两次请求):
+
+| 断点 | 结果 |
+|---|---|
+| 第 4 行 `<h1>${title}</h1>` | 每次渲染停 **1** 次 |
+| 第 6 行(each 体内) | 每次渲染停 **3** 次,一次迭代一次 |
+| 第 10 行 `</html>` | 不绑定;编译后把 `message` 改成「produces no code」并发 `breakpoint changed` |
+| 栈帧 | `page.gsp` 的绝对路径 + **页面行号**(不是生成行 30/31) |
+| Locals / Grails scope | 正常(`out`、`expressionOut`、`params`…) |
+
+同一轮跑了 Groovy 侧回归:断点序列 `20 23 25 25 23 25`、step over 序列
+`20 21 22 28 29 index:10 index:11`,与之前逐条一致。
+
+#### 还差的
+
+- **预编译 GSP 不支持**。生产构建用 `compileGsp` 提前编译,行号在
+  `LINENUMBERS_DATA_POSTFIX` 那个资源文件里,不是内存里的数组;类名形态也不同。
+- **GSP 里的单步没量过**。断点验了;单步走的是生成行,一个页面行上可能停不止一次。
+- `grails-app/views` 现在是默认源根之一(否则页面既找不到也解析不出),副作用是
+  `packageFilters()` 会多出 `spike.*`、`errors.*` 这类由视图目录名生成的过滤器 —— 匹配不到东西,
+  无害。
+
+### 7.11 GSP 单步、一个潜伏的 stepIn 缺陷、以及预编译的真相(2026-09-06)
+
+#### stepIn 一直是坏的,只是没被触发
+
+量 GSP 单步时,`stepIn` 一个事件都不产生。原因不在 GSP:
+
+> **JDI 一个请求上的多个 class filter 是「与」,不是「或」。**
+
+`armStepInto` 把 `packageFilters()` 的每一条都加到同一个 `MethodEntryRequest` 上。此前只有
+`dapspike.*` 一条,所以能用;把 `grails-app/views` 加进源根后变成六条(视图目录名生成的
+`spike.*`、`errors.*`……),六条相与 —— **任何类都不可能同时属于六个包,于是一个事件都不产生**。
+
+这不是 GSP 才有的问题:**任何有两个顶层包的项目**(`com` 与 `org`、多模块、生成源码目录)
+在 0.1.11 起就已经踩上了,只是那一个靶子恰好只有一个包,所以从没露出来。
+改成**一条 pattern 一个请求**。回归后 `controller:9 → 20 → 21 → 22 → closure5:23`,与 §7.6 一致。
+
+#### step over 在 GSP 里会原地不动
+
+`armLineStepAt` 排除「当前行」时比的是**生成行**。一个页面行对应多个生成行,所以从页面第 4 行
+step over 落到第 9 行(生成行 37),再按一次落到生成行 38 —— **还是页面第 9 行,高亮不动**。
+改成比**用户看到的行**(和 §7.10 给去重器做的改动同源)。改后:第 4 行 → 第 9 行,一次。
+
+#### stepIn 进 GSP 的标签体
+
+页面类在**默认包**里,名字是路径,任何由目录名生成的包过滤器都匹配不到它。所以 stepIn 时若当前帧
+是 GSP,额外加一条 `<页面类>*` 的过滤器。实测从第 9 行(`invokeTag('captureBody',…)`)
+stepIn:
+
+```
+run:9 → closure2.doCall:4 → closure2$_closure4.doCall:4 → closure2.doCall:5
+```
+
+#### 预编译 GSP:Grails 7 根本不做
+
+原计划支持它。先量了三件事,结论是**这个前提在 Grails 7.2.3 上不成立**:
+
+1. 项目里**没有 `compileGsp` 任务**(`gradlew tasks --all` 只有 `war` / `bootWar` / `assemble`)。
+2. 打出来的 war 里是 **`WEB-INF/classes/spike/page.gsp` —— 页面源码**,没有 `gsp_*.class`,
+   也没有 `_linenumbers.data`。
+3. `GroovyPageMetaInfo` 里的 `precompiledMode` / `readLineNumbers()`(读
+   `_linenumbers.data`,格式是 `readInt` 长度 + 若干 `readInt`)是历史遗留,这个版本的构建
+   从不生成那些文件。
+
+所以 war 里也是**运行时编译**,和开发模式同一条路,§7.10 的实现原样适用 —— 没有第二条路要写。
+
+**但旁边有个真缺口**:war 里页面的绝对路径是 `WEB-INF/classes/spike/page.gsp`,与编辑器里
+`grails-app/views/spike/page.gsp` 不同,**推出来的类名对不上**,断点绑不上。实测确认:对 war
+下断点只停在「尚未编译」。要修得靠「按路径尾部匹配」,但**本靶子验不了** —— rest-api 骨架
+加装 GSP 后 `war` 没把视图打到解析器找的位置,渲染直接
+`Could not resolve view with name '/spike/page'`。那是靶子的打包问题,与适配器无关;在能渲染的
+war 上复验之前不写这段代码。
+
+### 7.12 war 里的 GSP 断点(2026-09-06)
+
+§7.11 留下的缺口:页面类名来自路径,部署之后路径变了,类名就对不上。实测两边:
+
+```
+从源码跑   C__Users_gaole_..._dapspike_grails_app_views_spike_page_gsp
+从 war 跑  ServletContext_resource___WEB_INF_grails_app_views_spike_page_gsp_
+```
+
+**行号矩阵一模一样** —— 同一个页面同一套映射,变的只有名字。两个名字都包含
+`_spike_page_gsp`,即 **`views` 以下那段路径**,按它匹配即可。要求**恰好一个**页面命中,
+命中多个就不绑(两个应用在同一个 JVM 里提供同名视图路径的情形),不猜。
+
+改动比想象中多一处:`install()` 里还有一道 `sourceName()` **必须完全相等**的检查,而 GSP 的
+`sourceName()` 就是它的类名 —— 类名放宽了、这道没放宽,结果是「找到了却又被拒掉」。
+两处都要放宽才通。
+
+`ClassPrepareRequest` 的过滤器不能表达「包含」(JDI 只允许一端一个 `*`),所以用
+`*_gsp` 与 `*_gsp_` 两条抓页面类本身(war 的资源路径在扩展名后还多一个字符),**闭包类等页面类
+prepare 之后再补一条 `<真实类名>$*`** —— 那时名字已知,而闭包要等页面第一次执行才加载,来得及。
+
+#### 让靶子能验这件事
+
+rest-api 骨架加装 GSP 后,`war` 不把 `grails-app/views` 打到视图解析器找的位置,渲染直接
+`Could not resolve view with name '/spike/page'`。在 `build.gradle` 里加
+
+```groovy
+tasks.withType(War).configureEach {
+    from('grails-app/views') { into 'WEB-INF/grails-app/views' }
+}
+```
+
+之后 war 渲染正常(359 字节,与 bootRun 一致)。**这是靶子的打包问题,不是适配器的** ——
+真实的 web profile 应用不需要这一步。
+
+实测(`warcase.sh`,断点下在**编辑器里那份** `page.gsp` 第 6 行):
+
+| 验的东西 | 结果 |
+|---|---|
+| 绑定 | 通过 —— `page.gsp:6 -> …_page_gsp_$_run_closure2.doCall (bci 87)` |
+| 停顿次数 | 3 次,一次 `<g:each>` 迭代一次 |
+| 栈帧 | 回映射到**本地**的 `page.gsp`,页面第 6 行 |
+| Locals | `item = 1`,Grails scope 正常 |
+
+同一轮回归:源码模式的 GSP(第 4 行 1 次、第 6 行 3 次、第 10 行不绑)、Groovy 断点
+`20 23 25 25 23 25`、Groovy step into `9 → 20 → 21 → 22 → 23`,全部与之前一致。
+
+### 7.13 数据断点与「附加到正在运行的应用」(2026-09-06)
+
+#### 数据断点
+
+字段被写入时中断。**这是 JVM 自己的能力**(`ModificationWatchpointRequest` /
+`AccessWatchpointRequest`),不需要在目标里跑任何代码,所以和读取侧的规则一致。
+
+DAP 侧两个请求:`dataBreakpointInfo`(问某个变量能不能被监视,返回一个不透明的 `dataId`)与
+`setDataBreakpoints`(用那些 id 武装)。`dataId` 是会话内的令牌,映射到
+`{Field, ObjectReference}`;**报 `canPersist: false`** —— 对象引用只在这条连接里有意义,
+跨会话记住的令牌什么都不指。
+
+三个设计选择:
+
+1. **按实例过滤**(`addInstanceFilter`),不是按类。面板里点的是「这个变量」,不是
+   「这个类的所有实例」。为此对该对象 `disableCollection()` —— 否则目标可能在点击与写入
+   之间把它回收掉,请求就静默地什么都不监视了。
+2. **只有字段能被监视**。局部变量、数组元素、map 项都不行 —— JVM 只报告字段写入。
+   `dataBreakpointInfo` 对它们返回 `dataId: null`,VSCode 就不显示那个菜单项。
+3. **final 字段拒绝**:它不会再被写,一个不可能命中的断点比没有更糟。合成字段同样拒绝,
+   理由和不显示它们一样。
+
+实测(靶子的 `SpikeService.touches`,服务是单例所以实例过滤能命中多次):
+
+```
+STOP 1 (breakpoint)       SpikeService:20   ← 在这里武装
+  dataBreakpointInfo -> dataId=field:1, "dapspike.SpikeService.touches (this instance)"
+  setDataBreakpoints -> verified
+STOP 2 (data breakpoint)  SpikeService.touch:57   dapspike.SpikeService.touches: 0 -> 1
+STOP 3 (data breakpoint)  SpikeService.touch:57   dapspike.SpikeService.touches: 1 -> 2
+```
+
+一个 JDI 细节:`EventRequestManager` **没有** `watchpointRequests()`,只有
+`modificationWatchpointRequests()` 与 `accessWatchpointRequests()` 两个分开的列表,
+清空时两个都要走。
+
+#### Grails: Attach to Running App
+
+在此之前进入调试只有两条路:Debug App(它自己启动应用)和手写 launch.json。**没有任何路径能
+连上一个已经在跑的应用** —— 而 §7.12 刚把「调试部署的 war」打通,正缺这一块。
+
+新命令问一个 `host:port`(只给端口也行),按 workspace 记住上次填的,然后用 `type: 'groovy'`
+起一个 attach 会话,`sourcePaths` 走同一套默认值。
+
+### 7.14 编辑器回归、GSP 高亮与解释异常(2026-09-06，0.1.18 本地未发布)
+
+本轮从协议 harness 转到**真实 VS Code Extension Host + Playwright/CDP**。
+测试脚本 `scripts/test-editor.js` 启动独立 Grails 靶子和隔离编辑器，自动选端口，
+只清理自己启动的进程树。靶子仍是 `../grails-dap-testbed/dapspike`，不使用业务项目。
+
+实际发现并修复：`grails.attach` 中 `workspaceFolder` 未定义，输入地址后在生成
+`sourcePaths` 时抛错。增加 `requireWorkspace` 检查后真实输入框连接通过。
+
+编辑器回归覆盖：
+
+- Attach 输入 host:port 后启动 Groovy 会话。
+- GSP 文件识别、gutter 断点、页面第 4 行命中、编辑器 Step Over 离开该行。
+- Variables 展开 `this.touches`，右键 **Break on Value Change**，连续捕获 `0 -> 1`
+  与 `1 -> 2`，HTTP 响应也与写入结果一致。
+- 真实 `IllegalStateException` 暂停后读取类型/message/应用帧/附近源码；无模型时展示
+  本地上下文与提示；继续执行后清除状态栏操作。
+
+测试脚本的两个坑：测试靶子是 REST 路由，`/spike/page` 实际执行 `show(id:'page')`；
+GSP 应走 `/gsppage`，字段写入应走 `/bump`。VS Code 右键菜单刚弹出时立即点击可能被
+菜单的防误触逻辑忽略；等待菜单截图稳定后使用有按下时长的点击，才能完成实际菜单操作。
+
+高亮采用 `syntaxes/gsp.tmLanguage.json`，复用内建 `text.html.basic` 和 `source.groovy`。
+GSP 注入作用于 HTML 文本和属性，但排除 comment/已嵌入 Groovy；这样不会将注释内的
+`${...}` 当代码，也不会在嵌套 Groovy 内重新开一层 GSP。自定义 namespace 标签同样识别。
+TextMate + Oniguruma 测试覆盖嵌套闭包、属性表达式、多行注释/scriptlet、directive、JS/CSS。
+
+AI 实现位于 `lib/exception-context.js` 与 `lib/explain-exception.js`，**不修改 DAP server**。
+通过标准 `exceptionInfo` / `stackTrace` 读取当前异常，最多 12 个工作区帧和 3 个文件的
+附近源码；不求值、不采集局部变量、Grails request/session 或环境变量。当前 editor 文本
+可能含未保存改动，snapshot 会注明。路径在工作区之外的源码不读取。
+
+用户可先运行 `Grails: Show Exception Context`；`Grails: Explain Exception` 才调用
+`vscode.lm.selectChatModels({})` 并让用户选模型，无固定 provider/model。没有模型时
+仍提供本地快照。授权由 VS Code 处理，不在断点命中时自动请求模型。
+模型输入按 `countTokens` 预算裁剪，输出流写入只读文档，不渲染可执行 webview。
+继续/单步/结束/stop 变化时丢弃旧上下文并取消请求；处理用户取消、provider 拒绝与流中断。
+
+**验证边界**：真实模型生成尚未验证。隔离编辑器没有可用 provider；模拟模型测试验证了
+流式成功、选择取消、读取期间 resume、流中 resume、权限/网络失败、输入预算与跨会话隔离，
+这些不能算成在线模型实测。macOS/Linux 进程分支仍未在本轮验证。
+
+运行方法与产物说明见 `docs/testing.md`。本地包为 `0.1.18`，Marketplace 仍为上次记录的
+`0.1.17`；本轮未执行发布或替换用户日常编辑器安装。
 
 ### T2 — 好用(再 2~4 周)
 
@@ -720,6 +1237,15 @@ index:8 (断点) → index:8 → index:9 → index:9 → index:10 → SpikeServi
 到 T2 就是在做产品了,要长期跟 Groovy/Grails 版本与 DAP 演进。
 
 ---
+
+### 7.15 并入本地 0.2.0 线(2026-10-12)
+
+本节记录 origin/dev(§7.5 – §7.14)与本地 Grails 7 / 8、launch 配置、`groovy-dap` 改名那条线合并之后的事实;逐项取舍与测试数见 CLAUDE.md「合并 origin/dev(2026-10-12)」。
+
+- **求值与改值用 §7.7 / §7.8 的实现。** 本地另写过一套(`PathExpression`、`ValueParser`、`setExpression`),没有带进来:合并后没有任何东西使用它们。**Watch 里改值(`setExpression`)延后**,能力不广告。
+- **从本地移植到这套 server 上的:** `org.apache.juli.*` 排除(冷 JVM 下第一个请求的 `new Closure` 会把 step 落进 Tomcat 的 `DirectJDKLog`,`onStepDone` 的 step out 再把整个 `each` 跑完);`continued` 事件在 resume **之前**发(单步与 continue 一致);局部变量逐个读,`InconsistentDebugInfoException` 只跳过那一个,求值遇到它报「还不可读」而不是「没有这个名字」;求值与括号匹配认引号。
+- **本节之外的行为差异(合并后用同一个 S1–S10 harness 在 Grails 7.2.3 与 8.0.0 上实测,两边 file:line 一致):** `stepIn` 能进入 `@Transactional` 方法;`.each` 里的 `stepIn` 只停第一次迭代;方法返回后的 `stepIn` / `next` 停在调用方下一行而不是调用行中段;`stepOut` 与 `next` 的序列与合并前一致。**harness 要把 `sourcePaths` 设成 artefact 目录**(`grails-app/controllers` 等,即扩展的 `defaultSourcePaths`),否则 §7.6 的 `stepIn` 包过滤器是按各 `sourcePaths` 根目录下的子目录名建的,根设成应用目录时什么调用都进不去。
+- **没有验证:** 真实 VS Code 窗口里的合并后行为;GSP、数据断点、QA、异常解释没有 server / node 侧测试覆盖合并后的行为。
 
 ## 8. 备选路线:改 `microsoft/java-debug` 而非从零写
 

@@ -26,6 +26,21 @@ code --install-extension gaolei8888.grails-gradle-extension --pre-release
 Grails and Gradle commands from the command palette and a sidebar tree — and a
 debugger that can actually stop on a line of Groovy.
 
+## Grails QA — local preview
+
+**Run QA** in the Grails sidebar opens a panel for Domain constraints, real
+Hibernate/H2 persistence and browser page/form tests. Spring Security projects
+can use test credentials (optionally saved in VS Code credential storage), or
+skip password authentication in a temporary local QA instance. Load test users
+from the target database, select a tenant when detected, then select a user.
+QA requests then have that user's identity and roles,
+including Grails `currentUser`. Each result includes a short use-case description.
+
+Saved plans preserve regression expectations. Reports include failures,
+screenshots and uncovered cases; forms need configured success/error selectors.
+This first version targets Grails 7 with Hibernate and has been exercised on
+Windows. See the [QA setup and limits](docs/qa.md).
+
 ## Breakpoints in `.groovy` files
 
 VSCode does not bind breakpoints in Groovy. The Java debugger resolves "file →
@@ -57,6 +72,12 @@ What that means in practice:
 - A domain object shows its own properties. GORM's traits compile a field into
   every domain class they touch, and a class with one property of its own arrives
   carrying half a dozen of them; those are hidden, and `id` and `version` are not.
+- Step over lands on the next line of your code, including on the way back out of
+  a call. It is built out of breakpoints rather than JDI stepping, which in a
+  Grails application would sometimes run to the end of the method instead.
+- **Step into enters a `@Transactional` method**, and enters a closure: stepping
+  into `(1..3).each { i ->` lands in the closure body. Step out walks back through
+  the wrapper frames Grails generates, which have no lines to stop on.
 - Stepping skips the framework: the Groovy runtime, reflection, the transaction
   template and the servlet container are stepped over rather than into.
 - **Exception breakpoints**, caught and uncaught, filtered the same way: it stops
@@ -69,8 +90,12 @@ view. The exception's message is read from the object rather than by calling
 `getMessage()`, so nothing runs in the application to describe a stop.
 
 Run **Grails: Debug App**. It starts `gradlew bootRun --debug-jvm`, waits for the
-JVM to report that it is listening, and attaches. Or write your own attach
-configuration:
+JVM to report that it is listening, and attaches.
+
+For an application this extension did not start — a war on a server, one started
+from a terminal, one in a container with the agent on — **Grails: Attach to
+Running App** asks for a host and port and attaches to it. Or write your own
+attach configuration:
 
 ```json
 {
@@ -108,6 +133,41 @@ list (one entry, for the workspace folder; builds of 0.1.7 before the fix also
 listed a duplicate under "user settings").
 **Not yet verified:** F5, and the F10/F11 keys.
 
+## Breakpoints in `.gsp` files
+
+GSP files include syntax highlighting for HTML, namespaced Grails tags (including
+custom tag libraries), `${…}` expressions, directives, scriptlets and GSP
+comments. JavaScript and CSS inside script/style blocks keep their highlighting.
+Toggle Block Comment uses `%{-- … --}%`.
+
+Set one in the gutter of a GSP and it binds, stops on the page's own line, and
+shows the `.gsp` in the call stack. The Grails scope, the variables pane and
+conditions all work there.
+
+There is no SMAP behind this and no JSR-45: a GSP compiles into a class named
+after the page's path, reporting no source file and no second stratum. The only
+mapping that exists while the application runs is an array of line numbers held
+by Grails, read as a field — so nothing runs in your application to place a
+breakpoint.
+
+A page is compiled the first time it renders, so a breakpoint set before that
+stays hollow and says so; render the page once and it binds. A line that
+generates no code — a closing tag, blank markup — says that instead.
+
+One line of markup becomes several statements in several classes, and the
+breakpoint goes on the first of them, so a line stops once per pass rather than
+two or three times. A line inside a `<g:each>` stops once per iteration.
+
+Stepping works inside a page: step over moves a line of markup at a time, and
+step into enters a tag body.
+
+Grails 7 compiles pages at runtime, in a packaged war as much as in a
+development run, so there is no precompiled case to handle. A page compiled from
+inside a war is a differently named class, because the name comes from the path;
+the part below `views` is the same either way and that is what a breakpoint
+matches on, so debugging a deployed application works from your copy of the
+file.
+
 ## Debugging tests
 
 **Grails: Debug Tests** runs `gradlew test --debug-jvm` and attaches to the test
@@ -118,7 +178,7 @@ at is one command; leave the box empty to debug the whole run.
 
 ## Commands
 
-Every Grails command and Gradle task this project knows about is registered — 201
+Every Grails command and Gradle task this project knows about is registered — 205
 of them. The ones people reach for are in the **Grails** view in the activity bar,
 under Run, Create (empty), Scaffold from domain class, Database Migration and
 Gradle; the rest are in the command palette under `Grails:` and `Gradle:`.
@@ -140,6 +200,7 @@ The application's log goes to an output channel — **Grails - Normal** for Run 
 
 ## Requirements
 
+- **VS Code 1.90 or newer.**
 - A Grails project with a Gradle wrapper (`gradlew`) in the folder you open.
 - **Grails 7.x or 8.x.** Checked against 7.2.3 and 8.0.0 by scripted debug sessions.
   In a real VS Code window (2026-10-11) the status bar buttons, Debug App,
@@ -202,23 +263,171 @@ it, it says what, and offers to stop it — because a JVM that cannot open its d
 port produces a build that stops after `:findMainClass` and prints nothing at all,
 which is indistinguishable from a hang.
 
+## Hover and watch
+
+Hovering a name shows its value, and watch expressions work, for anything that is
+a path: `user.name`, `params['id']`, `items[0].label`, `this.someService`. Names
+from the Grails scope resolve too, so `params` and `request` work in a hover even
+though neither appears in the source.
+
+Read, not run. A method call, an operator or a closure needs an expression
+compiled and executed inside the application, which means resuming its threads to
+do it -- so those are refused, by name and with the reason, rather than reported
+as missing.
+
+## Logpoints and hit counts
+
+Right-click in the gutter for **Add Logpoint**: a breakpoint that prints and
+carries on rather than stopping. Anything in braces is read the way a hover is, so
+
+```
+iteration {i}, so far {doubled}, from {params.id}
+```
+
+prints `iteration 2, so far [105, 106], from 47`. Lists and maps are written out
+rather than shown as an object id — up to eight entries, two levels deep. An
+expression it cannot read prints the reason in place of the value instead of
+disappearing.
+
+**Hit Count** takes a number, optionally after an operator:
+
+| | |
+|---|---|
+| `100` | stop from the hundredth hit onward (same as `>=100`) |
+| `=100` | stop on the hundredth hit only |
+| `>100` `<100` `<=100` | as they read |
+| `%10` | stop on every tenth hit |
+
+The count is of hits that would have stopped, so the second copy Groovy compiles
+of every line does not advance it. A hit count that cannot be read is reported on
+the breakpoint rather than ignored.
+
+## Conditions
+
+The **Condition** box takes a comparison:
+
+```
+params.id == '5'      i > 3      user.name != null      w.count <= limit
+```
+
+Each side is a path or a literal — the same reading a hover does — so names from
+the Grails scope work here as well: `params.action == 'index'` is a condition
+although `params` is not a local of anything on the stack.
+
+`==` compares by value, the way Groovy's does. Anything that needs an expression
+compiled and run inside the application — a call, arithmetic, a closure — is
+reported on the breakpoint, and **that breakpoint then stops every time**. A
+condition quietly treated as false would be a breakpoint that never fires, which
+reads as a broken debugger rather than as a condition to rewrite.
+
+With a hit count as well, the count advances only when the condition was true:
+`i > 1` with `=2` stops the second time `i > 1` holds.
+
+## Data breakpoints
+
+Right-click a field in the variables pane and choose **Break on Value Change**.
+The debugger stops where the write happens and says what the value was and what
+it is about to become:
+
+```
+dapspike.SpikeService.touches: 0 -> 1
+```
+
+Watching a field is a JVM facility, so nothing runs in your application to arm
+one. It watches the object you pointed at rather than every instance of the
+class, which is what "this variable" means in the pane. Reads can be watched too
+where the JVM allows it.
+
+Only fields can be watched — that is all the JVM reports writes to — so the
+option does not appear for a local, an array element or a map entry, and a final
+field is refused because it is never written again.
+
+## Changing a value
+
+A local, a field, an array element or an existing map entry can be changed from
+the variables pane while the target is stopped: numbers, strings, booleans and
+null. Setting `seed` from 4 to 7 at the top of a service method changes what the
+application then returns.
+
+A local that a closure captured is written inside the `groovy.lang.Reference` it
+is boxed in, not over it — replacing the box would leave the closure holding the
+old one. A map entry is changed in place; a key that is not there cannot be added
+this way.
+
+This is the one place the debugger runs code in your application. JDI will not put
+an int into a slot typed `java.lang.Integer`, and Groovy types nearly everything
+that way, so making a boxed number calls `valueOf` on the box class — a JDK static
+that takes no locks — single-threaded. Reading a value never runs anything.
+
+## Generate QA cases with AI
+
+Open **Grails: Run QA**, click **Generate QA cases with AI**, and choose a VS Code
+language model. It proposes cases from controller, view and Domain source excerpts.
+Review and save `ai-draft.json`, click **Use AI draft**, choose a test identity when
+needed, then **Run QA**. The local browser window shows the saved clicks, inputs
+and assertions; results include use-case descriptions, steps and screenshots.
+Clear **Show local browser during QA** to run headlessly.
+
+AI cases supplement the existing Domain baseline. Model output is validated data,
+and does not execute arbitrary code. No model provider leaves the saved plan intact.
+Generation infers expectations from bounded source excerpts, so review them before
+using them as a regression baseline. Run QA replays the plan; it does not yet use
+live screenshots for autonomous exploration.
+
+## Explain an exception
+
+Requires **VS Code 1.90 or later**. When paused on a Groovy exception, click
+**Explain Exception** in the status bar or run **Grails: Explain Exception**.
+Choose one of the language models available in VS Code. The explanation streams
+into a read-only document beside your code and includes the context used.
+
+The request sends the exception type/message, up to twelve application frames,
+and nearby source from up to three workspace files. It does not collect locals,
+Grails request/session values or environment variables. Source and exception
+messages can themselves contain sensitive text; **Grails: Show Exception Context**
+lets you inspect the local snapshot before choosing to use a model. No data is
+sent automatically when a breakpoint is hit. The snapshot uses current editor
+text (including unsaved changes), which may differ from a deployed application.
+
+Model access and any initial consent are handled by VS Code's
+[Language Model API](https://code.visualstudio.com/api/extension-guides/ai/language-model).
+No particular model or vendor is required. If no model is available, the command
+opens the local exception context with setup guidance. Cancel the progress
+notification to stop a request; continuing or stepping the debugger also cancels
+it. Explanations suggest changes but do not edit files or execute application code.
+
+## Development and tests
+
+Run `pnpm install`, `npm run build:server`, `pnpm test`, and `pnpm lint`.
+The debug adapter has its own dependency-free checks: `cd server && ./gradlew
+verifyProtocol` (also run by `./gradlew build`).
+`pnpm test:editor` runs the real VS Code/Grails integration suite in an isolated
+profile. See [testing instructions](docs/testing.md) for the standalone testbed,
+environment overrides and test coverage.
+
 ## Known issues
 
 - **Step over once skipped code.** It was reported that after stepping over the last
   line of a service method back into the controller, a further step over skipped
   the remaining code. It could not be reproduced afterwards (several target
   shapes, JDK 21 and 25, Grails 7 and 8), and the cause is unknown.
-- **Step into does not enter a `@Transactional` method.** Its entry runs through
-  the transaction template, and stepping climbs back out to the calling line. Put a
-  breakpoint in the method instead.
-- **Watch, hover and the Debug Console evaluate variable paths only** (`a.b.c`,
-  `list[0]`, `map['k']`); nothing is run in the application. **Conditional
-  breakpoints and general expressions are not implemented.** They need Groovy
-  expressions compiled and evaluated inside the target VM.
-- **Simple variable values can be changed** in the Variables and Watch panels:
-  literals only, for primitives and `String` (not captured closure variables,
-  boxed values, objects or collections). Changing a value was seen working in a
-  real VS Code window; which request VS Code sends for it is not known.
+- **Step into a `@Transactional` method enters it** (scripted runs on Grails 7.2.3
+  and 8.0.0, 2026-10-12). Inside a `.each` closure, Step Into stops in the closure
+  for the first iteration only and then continues past the loop; put a breakpoint in
+  the closure to stop on every iteration. Step Into relies on `sourcePaths` being the
+  project's source roots (the extension fills these in): with the application folder
+  itself as the only root, Step Into does not enter calls.
+- **Watch, hover, the Debug Console, logpoints and conditions read variable paths
+  only** (`a.b.c`, `list[0]`, `map['k']`); nothing is run in the application, and
+  `list.size()` is refused by name, with the reason. General expressions are not
+  implemented.
+- **Simple variable values can be changed in the Variables panel**: numbers,
+  `true` / `false`, characters, strings and `null`, written as literals. A number
+  put into a boxed or `Object` slot is made by running `valueOf` of one of the JDK
+  box classes in the application (the only code the debugger runs there). Not
+  supported: objects and collections. **Editing from Watch (`setExpression`) is
+  deferred.** Changing a value was seen working in a real VS Code window with the
+  earlier adapter; which request VS Code sends for it is not known.
 - **Hot reload needs a recompile.** Saving a source file alone does not change the
   running app. Once the class was reloaded (what triggers that was not
   established), breakpoints rebound to the new class and showed the new value; seen
@@ -233,7 +442,11 @@ which is indistinguishable from a hang.
 - Code Groovy's own classpath script may print `Cannot mutate the state of
   configuration ':compileOnly'` in its output channel on Grails projects; it is
   harmless and not from this extension.
-- GSP files are not mapped.
+- Two different applications serving the same view path in one JVM would make a
+  GSP breakpoint ambiguous; it binds to neither rather than guessing.
+- The AI command's real exception capture and no-model behavior have been tested
+  in VS Code. Model streaming/error/cancellation paths have automated tests with
+  a simulated provider; a live provider response still needs verification.
 
 ## Star it
 

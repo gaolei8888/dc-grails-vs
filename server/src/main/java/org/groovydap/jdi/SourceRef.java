@@ -65,16 +65,25 @@ public final class SourceRef {
     private final String fileName;
     private final List<String> prefixes;
     private final List<String> lines;
+    private final boolean gsp;
+    /** For a GSP: the part of the class name that survives being deployed. */
+    private final String marker;
 
-    private SourceRef(Path path, String fileName, List<String> prefixes, List<String> lines) {
+    private SourceRef(Path path, String fileName, List<String> prefixes, List<String> lines,
+                      boolean gsp, String marker) {
         this.path = path;
         this.fileName = fileName;
         this.prefixes = prefixes;
         this.lines = lines;
+        this.gsp = gsp;
+        this.marker = marker;
     }
 
     public static SourceRef of(String pathText) throws IOException {
         Path path = Paths.get(pathText);
+        if (GspSource.isGsp(pathText)) {
+            return gspRef(path);
+        }
         String fileName = path.getFileName().toString();
         String raw = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
         List<String> lines = Arrays.asList(raw.split("\r?\n", -1));
@@ -97,7 +106,44 @@ public final class SourceRef {
         for (String name : names) {
             prefixes.add(pkg.isEmpty() ? name : pkg + "." + name);
         }
-        return new SourceRef(path, fileName, Collections.unmodifiableList(prefixes), lines);
+        return new SourceRef(path, fileName, Collections.unmodifiableList(prefixes), lines,
+                false, null);
+    }
+
+    /**
+     * A GSP, whose class name is its own path and whose {@code sourceName()} is
+     * that same string rather than a file name (design doc §7.9). Nothing has to
+     * be read out of the file to work either of them out -- which is just as well,
+     * since the page is markup and its class names are not in it.
+     */
+    private static SourceRef gspRef(Path path) throws IOException {
+        String className = GspSource.classNameFor(path);
+        List<String> lines;
+        try {
+            lines = Arrays.asList(
+                    new String(Files.readAllBytes(path), StandardCharsets.UTF_8)
+                            .split("\r?\n", -1));
+        } catch (IOException e) {
+            lines = Collections.emptyList();
+        }
+        return new SourceRef(path, className,
+                Collections.singletonList(className), lines, true,
+                GspSource.relativeMarker(path));
+    }
+
+    /**
+     * Whether a class from a GSP running somewhere else is this page.
+     *
+     * <p>Deliberately not offered for Groovy: a class name there is the package
+     * and the type, which does not change with where the application runs.
+     */
+    public boolean isGspMarker(String className) {
+        return marker != null && className.contains(marker);
+    }
+
+    /** Whether this file's lines have to be translated before they mean bytecode. */
+    public boolean isGsp() {
+        return gsp;
     }
 
     public Path path() {
@@ -116,9 +162,19 @@ public final class SourceRef {
 
     /** Filters for {@code ClassPrepareRequest}: each type and its synthetics. */
     public List<String> classPrepareFilters() {
-        List<String> filters = new ArrayList<>(prefixes.size());
+        List<String> filters = new ArrayList<>(prefixes.size() + 2);
         for (String prefix : prefixes) {
             filters.add(prefix + "*");
+        }
+        if (gsp && marker != null) {
+            // JDI allows one wildcard, at one end, so "contains" cannot be a
+            // filter. A page class ends in the mangled .gsp extension -- "_gsp"
+            // from the sources, "_gsp_" from a war, whose resource path has one
+            // more character after it -- and mayOwn() sorts out which of them is
+            // this page. Its closures are picked up once it is known: see
+            // BreakpointBinder.watchClosuresOf.
+            filters.add("*_gsp");
+            filters.add("*_gsp_");
         }
         return filters;
     }
@@ -136,7 +192,7 @@ public final class SourceRef {
                 return true;
             }
         }
-        return false;
+        return isGspMarker(className);
     }
 
     /** 1-based; empty string past the end of the file. */

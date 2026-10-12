@@ -5,7 +5,7 @@
   "version": "0.2.0",
   "publisher": "gaolei8888",
   "engines": {
-    "vscode": "^1.63.0"
+    "vscode": "^1.90.0"
   },
   "categories": [
     "Debuggers",
@@ -13,6 +13,7 @@
     "Snippets"
   ],
   "license": "MIT",
+  "icon": "media/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/gaolei8888/dc-grails-vs.git"
@@ -38,12 +39,43 @@
   "main": "./extension.js",
   "contributes": {
     "languages": [
-        {
-          "id": "groovy",
-          "extensions": [ ".groovy" ],
-          "aliases": [ "Groovy", "grails" ]
+      {
+        "id": "groovy",
+        "extensions": [
+          ".groovy"
+        ],
+        "aliases": [
+          "Groovy",
+          "grails"
+        ]
+      },
+      {
+        "id": "gsp",
+        "extensions": [
+          ".gsp"
+        ],
+        "aliases": [
+          "GSP",
+          "Groovy Server Pages"
+        ],
+        "configuration": "./language-configuration/gsp.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "gsp",
+        "scopeName": "text.html.gsp",
+        "path": "./syntaxes/gsp.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.groovy": "groovy",
+          "source.js": "javascript",
+          "source.css": "css"
+        },
+        "tokenTypes": {
+          "meta.embedded.groovy": "other"
         }
-      ],
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {
@@ -65,6 +97,9 @@
     "breakpoints": [
       {
         "language": "groovy"
+      },
+      {
+        "language": "gsp"
       }
     ],
     "debuggers": [
@@ -72,7 +107,8 @@
         "type": "groovy-dap",
         "label": "Grails (Groovy debugger)",
         "languages": [
-          "groovy"
+          "groovy",
+          "gsp"
         ],
         "configurationAttributes": {
           "launch": {
@@ -233,6 +269,21 @@
     },
     "commands": [
       {
+        "command": "grails.qa",
+        "title": "Grails: Run QA",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "grails.explainException",
+        "title": "Grails: Explain Exception",
+        "enablement": "grails:exceptionStopped"
+      },
+      {
+        "command": "grails.showExceptionContext",
+        "title": "Grails: Show Exception Context",
+        "enablement": "grails:exceptionStopped"
+      },
+      {
         "command": "grails.showOutput",
         "title": "Grails: Show Output"
       },
@@ -247,6 +298,11 @@
       {
         "command": "grails.debug",
         "title": "Grails: Debug App"
+      },
+      {
+        "command": "grails.attach",
+        "title": "Grails: Attach to Running App",
+        "category": "Grails"
       },
       {
         "command": "grails.debugTests",
@@ -1039,12 +1095,25 @@
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run build:server",
+    "vscode:prepublish": "npm run build:server && npm run build:qa",
     "build:server": "node scripts/build-server.js",
+    "build:qa": "node scripts/build-qa.js",
+    "qa": "node qa/cli.js",
     "lint": "eslint .",
-    "test": "vscode-test"
+    "test": "node --test test/unit/*.test.js",
+    "test:editor": "node scripts/test-editor.js",
+    "test:qa:editor": "node scripts/test-qa-editor.js",
+    "test:qa:regression": "node scripts/test-qa-regression.js"
   },
   "devDependencies": {
-    "vscode": "^1.1.37"
+    "@types/vscode": "1.90.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^3.9.2",
+    "eslint": "9",
+    "globals": "^17.12.0",
+    "mocha": "^12.0.0",
+    "playwright-core": "^1.63.0",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2"
   }
 }

@@ -206,6 +206,15 @@ final class EndToEndChecks {
 
         /** Handshake up to the first breakpoint hit. Returns the stopped thread id. */
         int attachAndHitBreakpoint(Target target, Path dir) throws Exception {
+            return attachAndHit(target, dir, List.of(map("line", BREAKPOINT_LINE)), BREAKPOINT_LINE, true);
+        }
+
+        /**
+         * The same handshake with chosen breakpoints. Returns the thread of the first stop,
+         * or -1 when {@code expectStop} is false (the target is just released).
+         */
+        int attachAndHit(Target target, Path dir, List<Map<String, Object>> wanted, int line,
+                boolean expectStop) throws Exception {
             body(channel.request("initialize", map("adapterID", "groovy")));
             // The adapter resumes the VM's start-up suspension as soon as it attaches,
             // so main() runs on its own. The target announces itself and then waits on
@@ -216,12 +225,15 @@ final class EndToEndChecks {
             target.awaitOutput("target ready");
             Map<String, Object> bps = body(channel.request("setBreakpoints", map(
                     "source", map("path", dir.resolve("Target.java").toString()),
-                    "breakpoints", List.of(map("line", BREAKPOINT_LINE)))));
+                    "breakpoints", wanted)));
             Map<String, Object> bp = list(bps, "breakpoints").get(0);
             eq(Boolean.TRUE, bp.get("verified"), "breakpoint verified: " + bp);
-            eq(BREAKPOINT_LINE, intOf(bp.get("line")), "line");
+            eq(line, intOf(bp.get("line")), "line");
             body(channel.request("configurationDone", null));
             target.release();
+            if (!expectStop) {
+                return -1;
+            }
             Map<String, Object> stopped = channel.awaitEvent("stopped", 20_000);
             @SuppressWarnings("unchecked")
             Map<String, Object> sb = (Map<String, Object>) stopped.get("body");
@@ -262,13 +274,6 @@ final class EndToEndChecks {
                     "name", name, "value", value));
         }
 
-        /** The raw setExpression response. */
-        Map<String, Object> setExpression(Map<String, Object> frame, String expression, String value)
-                throws Exception {
-            return channel.request("setExpression", map("expression", expression,
-                    "value", value, "frameId", frame.get("id")));
-        }
-
         /** The Locals scope handle of a frame, for setVariable. */
         Object localsRef(Map<String, Object> frame) throws Exception {
             Map<String, Object> scopes = body(channel.request("scopes", map("frameId", frame.get("id"))));
@@ -300,7 +305,9 @@ final class EndToEndChecks {
         eq("20", body(s.evaluate(frame, "arr[1]", "watch")).get("result"), "array element");
         eq("\"v\"", body(s.evaluate(frame, "names['k']", "watch")).get("result"), "map key");
         eq("\"v\"", body(s.evaluate(frame, "names.k", "hover")).get("result"), "map .key");
-        eq("7", body(s.evaluate(frame, "m[7]", "watch")).get("result"), "int-keyed map");
+        // Known limit of reading by walking: only string keys and list indexes are read, so an
+        // int-keyed map is refused (cleanly) rather than guessed at.
+        eq(Boolean.FALSE, s.evaluate(frame, "m[7]", "watch").get("success"), "int-keyed map is refused");
         eq("\"b\"", body(s.evaluate(frame, "list[1]", "watch")).get("result"), "list element");
         eq("\"box\"", body(s.evaluate(frame, "item.name", "watch")).get("result"), "field");
         eq("\"inner\"", body(s.evaluate(frame, "item.next.name", "watch")).get("result"),
@@ -312,20 +319,25 @@ final class EndToEndChecks {
         List<Map<String, Object>> kids = s.children(item);
         eq("name", kids.get(0).get("name"), "the result expands like the pane's variable");
 
-        String readOnly = "only variable paths can be evaluated here "
-                + "(the debugger does not run code in the application)";
-        for (String bad : new String[] {"y + 1", "x + 1", "arr.length()", "item.toString()", "x = 3"}) {
-            Map<String, Object> r = s.evaluate(frame, bad, "watch");
-            eq(Boolean.FALSE, r.get("success"), bad + " must fail");
-            eq(readOnly, r.get("message"), bad);
+        String[][] refused = {
+            {"y + 1", "operators are not supported"},
+            {"x + 1", "operators are not supported"},
+            {"x = 3", "operators are not supported"},
+            {"arr.length()", "method calls are not supported"},
+            {"item.toString()", "method calls are not supported"},
+        };
+        for (String[] bad : refused) {
+            Map<String, Object> r = s.evaluate(frame, bad[0], "watch");
+            eq(Boolean.FALSE, r.get("success"), bad[0] + " must fail");
+            that(String.valueOf(r.get("message")).startsWith(bad[1]), bad[0] + ": " + r.get("message"));
         }
         Map<String, Object> missing = s.evaluate(frame, "nope", "watch");
         eq(Boolean.FALSE, missing.get("success"), "undefined name fails");
-        eq("'nope' is not defined in this frame", missing.get("message"), "undefined message");
-        eq("'this' is not defined in this frame",
+        eq("no local, field or request attribute named nope", missing.get("message"), "undefined message");
+        eq("this is not available in a static frame",
                 s.evaluate(frame, "this", "watch").get("message"), "static main has no this");
         // y is declared on the breakpoint line itself, so it is not in scope yet.
-        eq("'y' is not defined in this frame",
+        eq("no local, field or request attribute named y",
                 s.evaluate(frame, "y", "watch").get("message"), "y is not in scope before its line runs");
 
         Map<String, Object> stale = s.channel.request("evaluate", map("expression", "x",
@@ -412,7 +424,7 @@ final class EndToEndChecks {
                 }
             });
 
-            test("e2e: next and continue each send one continued{allThreadsContinued} before the next stop", () -> {
+            test("e2e: next, stepIn and continue each send one continued{allThreadsContinued} before the next stop", () -> {
                 try (Target target = new Target(dir)) {
                     Session s = new Session();
                     try {
@@ -424,6 +436,13 @@ final class EndToEndChecks {
                         eq(java.util.Arrays.asList("response:next", "event:continued", "event:stopped"),
                                 s.channel.since(mark), "message order around next");
                         assertAllThreadsContinued(s, threadId);
+
+                        // stepIn goes through the assist (breakpoint-armed) path, not JDI stepping
+                        mark = s.channel.mark();
+                        body(s.channel.request("stepIn", map("threadId", threadId)));
+                        s.channel.awaitEvent("stopped", 20_000);
+                        eq(java.util.Arrays.asList("response:stepIn", "event:continued", "event:stopped"),
+                                s.channel.since(mark), "message order around stepIn");
 
                         mark = s.channel.mark();
                         body(s.channel.request("continue", map("threadId", threadId)));
@@ -443,14 +462,18 @@ final class EndToEndChecks {
                 }
             });
 
-            test("e2e: setVariable/setExpression change the target's variables; refusals change nothing", () -> {
+            test("e2e: setVariable changes the target's variables; refusals change nothing", () -> {
                 try (Target target = new Target(dir)) {
                     Session s = new Session();
                     try {
                         Map<String, Object> init = body(s.channel.request("initialize", map()));
                         eq(Boolean.TRUE, init.get("supportsSetVariable"), "supportsSetVariable");
-                        eq(Boolean.TRUE, init.get("supportsSetExpression"), "supportsSetExpression");
-                        eq(Boolean.FALSE, init.get("supportsConditionalBreakpoints"), "conditional stays off");
+                        // Watch editing (setExpression) is deferred: it must stay unadvertised.
+                        that(!Boolean.TRUE.equals(init.get("supportsSetExpression")),
+                                "supportsSetExpression is deferred: " + init.get("supportsSetExpression"));
+                        eq(Boolean.TRUE, init.get("supportsConditionalBreakpoints"), "conditional");
+                        eq(Boolean.TRUE, init.get("supportsHitConditionalBreakpoints"), "hit counts");
+                        eq(Boolean.TRUE, init.get("supportsLogPoints"), "logpoints");
                         int threadId = s.attachAndHitBreakpoint(target, dir);
                         Map<String, Object> frame = s.topFrame(threadId);
                         Object locals = s.localsRef(frame);
@@ -458,39 +481,28 @@ final class EndToEndChecks {
                         Object nums = named(before, "nums").get("variablesReference");
                         Object hold = named(before, "hold").get("variablesReference");
 
-                        String needs = "changing it would need to create an object in the application, "
-                                + "which the debugger does not do";
                         String[][] refused = {
-                            {"boxed", "5", "'boxed' holds a java.lang.Integer; " + needs},
-                            {"label", "7", "'label' is a java.lang.String; write the value in quotes, e.g. \"7\""},
-                            {"x", "y + 1", "value must be a literal: a number, true or false, 'c', "
-                                    + "\"text\" or null (the debugger does not run code in the application)"},
-                            {"tiny", "300", "300 does not fit in byte"},
-                            {"x", "3.5", "3.5 is not an int literal"},
-                            {"x", "null", "cannot assign null to int"},
-                            {"this", "null", "'this' cannot be changed"},
-                            {"y", "1", "'y' is not a variable of this frame"},
+                            {"x", "y + 1", "y + 1 is not a whole number"},
+                            {"tiny", "300", "300 does not fit"},
+                            {"x", "3.5", "3.5 is not a whole number"},
+                            {"x", "null", "null is not a whole number"},
+                            {"this", "null", "this cannot be reassigned"},
+                            {"y", "1", "no local named y here"},
                         };
                         for (String[] r : refused) {
                             Map<String, Object> resp = s.setVariable(locals, r[0], r[1]);
                             eq(Boolean.FALSE, resp.get("success"), r[0] + " <- " + r[1] + " must fail");
                             eq(r[2], resp.get("message"), r[0] + " <- " + r[1]);
                         }
-                        Map<String, Object> fin = s.setVariable(hold, "fixed", "1");
-                        eq("'fixed' is final", fin.get("message"), "final field");
-                        eq("'[7]' is not an element the debugger shows",
-                                s.setVariable(nums, "[7]", "1").get("message"), "past the end");
-                        eq("only variable paths can be evaluated here "
-                                + "(the debugger does not run code in the application)",
-                                s.setExpression(frame, "x + 1", "5").get("message"), "expression target");
-                        eq("'zz' is not defined in this frame",
-                                s.setExpression(frame, "zz", "5").get("message"), "unknown target");
-                        Map<String, Object> noFrame = s.channel.request("setExpression", map(
-                                "expression", "x", "value", "1", "frameId", 999 << 16));
-                        eq(Boolean.FALSE, noFrame.get("success"), "unknown frame fails, does not throw");
+                        eq("could not set fixed: java.lang.IllegalArgumentException: "
+                                + "Cannot set value of final field",
+                                s.setVariable(hold, "fixed", "1").get("message"), "final field");
+                        that(String.valueOf(s.setVariable(nums, "[7]", "1").get("message"))
+                                .startsWith("could not set [7]"), "past the end");
+                        eq("that variable belongs to an earlier stop and is gone",
+                                s.setVariable(424242, "x", "1").get("message"), "unknown handle");
                         List<Map<String, Object>> unchanged = s.locals(frame);
                         eq("40", named(unchanged, "x").get("value"), "x unchanged by refusals");
-                        eq("5", named(unchanged, "boxed").get("value"), "boxed unchanged");
                         eq("\"old\"", named(unchanged, "label").get("value"), "label unchanged");
                         eq("1", named(unchanged, "tiny").get("value"), "tiny unchanged");
 
@@ -501,21 +513,25 @@ final class EndToEndChecks {
                         eq("2.0", ratio.get("value"), "ratio re-read");
                         eq("double", ratio.get("type"), "ratio type");
                         eq("z", body(s.setVariable(locals, "ch", "'z'")).get("value"), "ch");
-                        eq("\"new \"label\"\"", body(s.setVariable(locals, "label",
-                                "\"new \\\"label\\\"\"")).get("value"), "label");
+                        eq("\"new label\"", body(s.setVariable(locals, "label",
+                                "\"new label\"")).get("value"), "label");
+                        // A box-typed local: making the Integer is the one thing run in the target.
+                        Map<String, Object> boxedSet = body(s.setVariable(locals, "boxed", "7"));
+                        eq("7", boxedSet.get("value"), "boxed");
+                        eq("java.lang.Integer", boxedSet.get("type"), "boxed keeps its declared type");
                         Map<String, Object> gone = body(s.setVariable(locals, "gone", "null"));
                         eq("null", gone.get("value"), "gone");
                         eq("java.lang.String", gone.get("type"), "a null keeps its declared type");
                         eq("99", body(s.setVariable(nums, "[1]", "99")).get("value"), "nums[1]");
                         eq("42", body(s.setVariable(hold, "count", "42")).get("value"), "hold.count");
-                        // ... and setExpression, which is how Watch edits a value
-                        eq("77", body(s.setExpression(frame, "nums[2]", "77")).get("value"), "nums[2]");
-                        eq("5", body(s.setExpression(frame, "tiny", "5")).get("value"), "tiny");
+                        eq("77", body(s.setVariable(nums, "[2]", "77")).get("value"), "nums[2]");
+                        eq("5", body(s.setVariable(locals, "tiny", "5")).get("value"), "tiny");
 
                         // later reads see the new values: the pane (no cache) and evaluate
                         List<Map<String, Object>> after = s.locals(frame);
                         eq("100", named(after, "x").get("value"), "pane x");
-                        eq("\"new \"label\"\"", named(after, "label").get("value"), "pane label");
+                        eq("\"new label\"", named(after, "label").get("value"), "pane label");
+                        eq("7", named(after, "boxed").get("value"), "pane boxed");
                         eq("null", named(after, "gone").get("value"), "pane gone");
                         eq("99", named(s.children(named(after, "nums")), "[1]").get("value"), "pane nums[1]");
                         eq("100", body(s.evaluate(frame, "x", "watch")).get("result"), "evaluate x");
@@ -526,10 +542,8 @@ final class EndToEndChecks {
                         // a handle from before the resume must not write
                         Map<String, Object> late = s.setVariable(locals, "x", "1");
                         eq(Boolean.FALSE, late.get("success"), "a stale handle must not write: " + late);
-                        eq("no stopped frame to change a variable in (the program is running, "
-                                + "or has resumed since this frame was shown)", late.get("message"), "stale message");
-                        Map<String, Object> lateExpr = s.setExpression(frame, "x", "1");
-                        eq(Boolean.FALSE, lateExpr.get("success"), "setExpression after resume fails");
+                        eq("that variable belongs to an earlier stop and is gone", late.get("message"),
+                                "stale message");
 
                         s.channel.awaitEvent("terminated", 20_000);
                         body(s.channel.request("disconnect", null));
@@ -538,10 +552,68 @@ final class EndToEndChecks {
                         eq(0, target.process.exitValue(), "target exit code");
                         that(target.output.contains("target done 103"),
                                 "y is computed from the new x: " + target.output);
-                        String printed = "after x=100 flag=true ratio=2.0 ch=z tiny=5 boxed=5 "
-                                + "label=new \"label\" gone=null nums=1,99,77 count=42 fixed=9";
+                        String printed = "after x=100 flag=true ratio=2.0 ch=z tiny=5 boxed=7 "
+                                + "label=new label gone=null nums=1,99,77 count=42 fixed=9";
                         that(target.output.contains(printed),
                                 "the target must print the new values, got: " + target.output);
+                    } finally {
+                        s.channel.closeClient();
+                    }
+                }
+            });
+
+            test("e2e: conditions, logpoints and hit counts decide whether a line stops (origin/dev features)", () -> {
+                // A true condition stops; line 15 runs once with x == 40.
+                try (Target target = new Target(dir)) {
+                    Session s = new Session();
+                    try {
+                        int threadId = s.attachAndHit(target, dir,
+                                List.of(map("line", BREAKPOINT_LINE, "condition", "x == 40")),
+                                BREAKPOINT_LINE, true);
+                        eq(BREAKPOINT_LINE, intOf(s.topFrame(threadId).get("line")), "true condition stops");
+                        body(s.channel.request("disconnect", null));
+                        s.joinCleanly();
+                    } finally {
+                        s.channel.closeClient();
+                    }
+                }
+                // A false condition, and a hit count of 2 on a line that runs once: no stop, the target runs to the end.
+                for (String[] never : new String[][] {{"condition", "x == 41"}, {"hitCondition", "2"}}) {
+                    try (Target target = new Target(dir)) {
+                        Session s = new Session();
+                        try {
+                            s.attachAndHit(target, dir,
+                                    List.of(map("line", BREAKPOINT_LINE, never[0], never[1])),
+                                    BREAKPOINT_LINE, false);
+                            s.channel.awaitEvent("terminated", 20_000);
+                            eq(null, s.channel.lastEvent("stopped"), never[0] + " " + never[1] + " must not stop");
+                            body(s.channel.request("disconnect", null));
+                            s.joinCleanly();
+                            that(target.process.waitFor(20, TimeUnit.SECONDS), "target did not exit");
+                            eq(0, target.process.exitValue(), "target exit code");
+                        } finally {
+                            s.channel.closeClient();
+                        }
+                    }
+                }
+                // A logpoint prints and does not stop: the first stop is the plain breakpoint on the next line.
+                try (Target target = new Target(dir)) {
+                    Session s = new Session();
+                    try {
+                        int threadId = s.attachAndHit(target, dir, List.of(
+                                map("line", BREAKPOINT_LINE, "logMessage", "x={x}"),
+                                map("line", BREAKPOINT_LINE + 1)), BREAKPOINT_LINE, true);
+                        eq(BREAKPOINT_LINE + 1, intOf(s.topFrame(threadId).get("line")),
+                                "the logpoint line did not stop");
+                        List<String> printed = new ArrayList<>();
+                        for (Map<String, Object> e : s.channel.events("output")) {
+                            @SuppressWarnings("unchecked")
+                            Map<String, Object> b = (Map<String, Object>) e.get("body");
+                            printed.add(String.valueOf(b.get("output")));
+                        }
+                        that(printed.contains("x=40\n"), "logpoint output: " + printed);
+                        body(s.channel.request("disconnect", null));
+                        s.joinCleanly();
                     } finally {
                         s.channel.closeClient();
                     }

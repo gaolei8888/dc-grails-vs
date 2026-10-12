@@ -47,6 +47,41 @@ import java.util.function.Consumer;
  */
 public final class BreakpointBinder {
 
+    /** One line the client asked for, with whatever was typed into its boxes. */
+    public static final class Spec {
+        public final int line;
+        public final String logMessage;
+        public final String hitCondition;
+        public final String condition;
+
+        public Spec(int line, String logMessage, String hitCondition, String condition) {
+            this.line = line;
+            this.logMessage = logMessage;
+            this.hitCondition = hitCondition;
+            this.condition = condition;
+        }
+    }
+
+    /**
+     * What a hit on one of these breakpoints means.
+     *
+     * <p>Three outcomes, and only the first is a stop: a plain breakpoint stops, a
+     * logpoint prints and carries on, and a hit that the hit count has not reached
+     * yet does neither.
+     */
+    public static final class Hit {
+        public final List<Integer> ids;
+        public final boolean stop;
+        /** The template to print and resume on, or null if this is not a logpoint. */
+        public final String logMessage;
+
+        private Hit(List<Integer> ids, boolean stop, String logMessage) {
+            this.ids = ids;
+            this.stop = stop;
+            this.logMessage = logMessage;
+        }
+    }
+
     /** One breakpoint the client asked for, and everything armed on its behalf. */
     private static final class Bp {
         final int id;
@@ -54,6 +89,16 @@ public final class BreakpointBinder {
         int line;
         boolean verified;
         String message;
+        String logMessage;
+        HitCondition hitCondition;
+        Condition condition;
+        /** Set when something was typed into a box and could not be read. */
+        final List<String> problems = new ArrayList<>();
+        /** Hits that got as far as being a stop; the Groovy duplicate is not one. */
+        long hits;
+        /** For a GSP: how deeply nested the bound class is, and which line of it. */
+        int gspDepth = Integer.MAX_VALUE;
+        int gspLine = Integer.MAX_VALUE;
 
         /**
          * Requests, kept per class name rather than in one list.
@@ -90,6 +135,10 @@ public final class BreakpointBinder {
         final SourceRef ref;
         final List<Bp> breakpoints = new ArrayList<>();
         final List<ClassPrepareRequest> classPrepareRequests = new ArrayList<>();
+        /** A GSP's generated-line to page-line matrix, once it can be read. */
+        int[] lineMatrix;
+        /** Page classes whose closures are already being watched. */
+        final java.util.Set<String> watchedClosuresOf = new java.util.HashSet<>();
 
         SourceState(SourceRef ref) {
             this.ref = ref;
@@ -119,7 +168,7 @@ public final class BreakpointBinder {
      *
      * @return the DAP {@code Breakpoint} objects to answer {@code setBreakpoints} with
      */
-    public synchronized List<Map<String, Object>> setBreakpoints(String path, List<Integer> lines)
+    public synchronized List<Map<String, Object>> setBreakpoints(String path, List<Spec> specs)
             throws IOException {
         String key = key(path);
         SourceState previous = bySource.remove(key);
@@ -131,8 +180,29 @@ public final class BreakpointBinder {
         SourceState state = new SourceState(ref);
         bySource.put(key, state);
 
-        for (int requested : lines) {
-            state.breakpoints.add(new Bp(nextId.getAndIncrement(), requested, requested));
+        for (Spec spec : specs) {
+            Bp bp = new Bp(nextId.getAndIncrement(), spec.line, spec.line);
+            bp.logMessage = spec.logMessage;
+            if (spec.hitCondition != null && !spec.hitCondition.trim().isEmpty()) {
+                bp.hitCondition = HitCondition.parse(spec.hitCondition);
+                if (bp.hitCondition == null) {
+                    // Say so rather than binding a breakpoint that ignores it: a hit
+                    // count quietly dropped looks like a debugger stopping wrongly.
+                    bp.problems.add("hit count \"" + spec.hitCondition.trim()
+                            + "\" not understood; expected a number, "
+                            + "optionally after >, >=, =, <, <= or %");
+                }
+            }
+            if (spec.condition != null && !spec.condition.trim().isEmpty()) {
+                bp.condition = Condition.parse(spec.condition);
+                if (bp.condition == null) {
+                    bp.problems.add("condition \"" + spec.condition.trim()
+                            + "\" is not a comparison this can read; expected two paths "
+                            + "or literals around ==, !=, >, >=, < or <=. It has no "
+                            + "expression compiler, so the breakpoint will stop every time");
+                }
+            }
+            state.breakpoints.add(bp);
         }
 
         // Classes already loaded. Filter by name before asking anything else --
@@ -176,15 +246,68 @@ public final class BreakpointBinder {
         String name = type.name();
         for (SourceState state : bySource.values()) {
             if (state.ref.mayOwn(name)) {
+                watchClosuresOf(state, name);
                 install(state, type);
             }
         }
     }
 
-    /** The breakpoint ids to report on a {@code stopped} event, or an empty list. */
-    public synchronized List<Integer> idsFor(BreakpointRequest request) {
+    /**
+     * Watches the closures of a page class that was found by its marker.
+     *
+     * <p>A page running from its sources is caught by a filter built from its own
+     * name, which covers its closures too. One running from a war has a different
+     * name and is found by the part of it that does not change -- but a JDI filter
+     * cannot express "contains", so the closures are not covered by it. Once the
+     * page class itself has prepared its name is known, and one more filter picks
+     * them up. That is early enough: a closure prepares when the page first runs,
+     * after the class that declares it.
+     */
+    private void watchClosuresOf(SourceState state, String className) {
+        if (!state.ref.isGsp() || className.indexOf('$') >= 0
+                || !state.watchedClosuresOf.add(className)) {
+            return;
+        }
+        try {
+            ClassPrepareRequest request = erm.createClassPrepareRequest();
+            request.addClassFilter(className + "$*");
+            request.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+            request.enable();
+            state.classPrepareRequests.add(request);
+        } catch (RuntimeException e) {
+            log.accept("could not watch the closures of " + className + ": " + e);
+        }
+    }
+
+    /**
+     * Counts a hit and says what to do about it.
+     *
+     * <p>Call this only for hits that are really going to be acted on: the count a
+     * hit condition tests is the number of times the user would have seen the
+     * breakpoint stop, so the duplicate that a doubly-compiled Groovy line produces
+     * has to have been dropped before this is reached.
+     */
+    public synchronized Hit onHit(BreakpointRequest request,
+                                  java.util.function.Predicate<Condition> holds) {
         Bp bp = owners.get(request);
-        return bp == null ? new ArrayList<>() : new ArrayList<>(List.of(bp.id));
+        if (bp == null) {
+            // Not ours. Stopping is the safe answer; nothing else knows the line.
+            return new Hit(new ArrayList<>(), true, null);
+        }
+        List<Integer> ids = new ArrayList<>(List.of(bp.id));
+        // The condition decides before the count moves: "stop on the third time the
+        // condition was true" is what anyone setting both of them means.
+        if (bp.condition != null && !holds.test(bp.condition)) {
+            return new Hit(ids, false, null);
+        }
+        bp.hits++;
+        if (bp.hitCondition != null && !bp.hitCondition.test(bp.hits)) {
+            return new Hit(ids, false, null);
+        }
+        if (bp.logMessage != null && !bp.logMessage.isEmpty()) {
+            return new Hit(ids, false, bp.logMessage);
+        }
+        return new Hit(ids, true, null);
     }
 
     public synchronized void clearAll() {
@@ -206,19 +329,59 @@ public final class BreakpointBinder {
             // attribute at all. Nothing to bind; not an error.
             return;
         }
-        if (!state.ref.fileName().equals(sourceName)) {
+        // A GSP reports its class name as its source name, and that name depends
+        // on where the application is running from -- so the same tolerance the
+        // class name gets has to apply here, or a page compiled inside a war is
+        // rejected after having been correctly identified.
+        if (!state.ref.fileName().equals(sourceName)
+                && !state.ref.isGspMarker(sourceName)) {
             return;
         }
 
         for (Bp bp : state.breakpoints) {
             installOne(state, type, bp, bp.line);
         }
+        if (state.ref.isGsp()) {
+            explainUnbound(state, type);
+        }
+    }
+
+    /**
+     * Says why a GSP breakpoint did not bind, once the page has been compiled.
+     *
+     * <p>Until then the only honest answer is "the page has not been compiled
+     * yet", because a GSP is compiled the first time it renders and there is no
+     * line matrix before that. Afterwards there is one, and it can say whether the
+     * line produced any code at all -- which for markup is most of the file.
+     */
+    private void explainUnbound(SourceState state, ReferenceType type) {
+        int[] matrix = matrixFor(state, type);
+        if (matrix == null) {
+            return;
+        }
+        for (Bp bp : state.breakpoints) {
+            if (bp.verified || !GspSource.generatedLines(matrix, bp.line).isEmpty()) {
+                continue;
+            }
+            String explanation = "line " + bp.line + " of "
+                    + state.ref.path().getFileName() + " produces no code";
+            if (!explanation.equals(bp.message)) {
+                bp.message = explanation;
+                breakpointChanged.accept(describe(bp, state.ref));
+            }
+        }
     }
 
     private boolean installOne(SourceState state, ReferenceType type, Bp bp, int line) {
-        List<Location> locations;
+        List<Location> locations = new ArrayList<>();
         try {
-            locations = type.locationsOfLine(line);
+            if (state.ref.isGsp()) {
+                locations = gspLocations(state, type, bp, line);
+            } else {
+                for (int target : targetLines(state, type, line)) {
+                    locations.addAll(type.locationsOfLine(target));
+                }
+            }
         } catch (AbsentInformationException e) {
             return false;
         }
@@ -252,8 +415,10 @@ public final class BreakpointBinder {
             request.enable();
             installed.add(request);
             owners.put(request, bp);
+            // The file name, not ref.fileName(): for a GSP the latter is the
+            // mangled class name, which is a mouthful and not what the user typed.
             log.accept(String.format("bound %s:%d -> %s.%s (bci %d)",
-                    state.ref.fileName(), line, type.name(),
+                    state.ref.path().getFileName(), line, type.name(),
                     location.method().name(), location.codeIndex()));
         }
         bp.verified = true;
@@ -265,10 +430,111 @@ public final class BreakpointBinder {
     }
 
     /**
+     * One page line binds in one place, and this decides which.
+     *
+     * <p>A GSP line is spread over several generated lines in several classes:
+     * page line 4 of the target becomes generated 23 and 24 in {@code run} and 25
+     * and 26 in the body closure, and page line 6 becomes generated 30 and 31 in
+     * the body closure and 30 again in the closure the expression compiles into.
+     * Arming all of them stops two or three times on one line of markup, which is
+     * the same complaint the double-compiled Groovy line produced, twice over.
+     *
+     * <p>The rule: the outermost class that owns any of the page line's generated
+     * lines, and within it the lowest such line -- the first thing that line of the
+     * page generated. A better candidate arriving later replaces the earlier one,
+     * so it does not depend on the order classes happen to prepare in. A class
+     * that already holds requests is always re-armed: that is a class prepared
+     * again, which is what a devtools restart does.
+     */
+    private List<Location> gspLocations(SourceState state, ReferenceType type, Bp bp, int line)
+            throws AbsentInformationException {
+        int depth = 0;
+        for (int i = 0; i < type.name().length(); i++) {
+            if (type.name().charAt(i) == '$') {
+                depth++;
+            }
+        }
+        for (int target : targetLines(state, type, line)) {
+            List<Location> found = type.locationsOfLine(target);
+            if (found.isEmpty()) {
+                continue;
+            }
+            boolean rearming = bp.requestsByClass.containsKey(type.name());
+            if (!rearming && bp.verified
+                    && (depth > bp.gspDepth
+                        || (depth == bp.gspDepth && target >= bp.gspLine))) {
+                return List.of(); // what is already armed is at least as good
+            }
+            if (!rearming && bp.verified) {
+                dropRequests(bp); // this one is better; the old binding goes
+            }
+            bp.gspDepth = depth;
+            bp.gspLine = target;
+            return found;
+        }
+        return List.of();
+    }
+
+    private void dropRequests(Bp bp) {
+        for (BreakpointRequest request : bp.allRequests()) {
+            owners.remove(request);
+            try {
+                erm.deleteEventRequest(request);
+            } catch (RuntimeException e) {
+                // the VM may have discarded it already
+            }
+        }
+        bp.requestsByClass.clear();
+    }
+
+    /**
+     * The lines of {@code type} to ask about, for one line of the source file.
+     *
+     * <p>For Groovy that is the line itself. For a GSP it is every generated line
+     * the page line produced, read out of the page's line matrix -- there is no
+     * SMAP to do this, and the matrix is the only place the mapping exists at
+     * runtime. See {@link GspSource}.
+     */
+    private List<Integer> targetLines(SourceState state, ReferenceType type, int line) {
+        if (!state.ref.isGsp()) {
+            return List.of(line);
+        }
+        int[] matrix = matrixFor(state, type);
+        return matrix == null ? List.of() : GspSource.generatedLines(matrix, line);
+    }
+
+    /**
+     * The page's line matrix, cached per source.
+     *
+     * <p>Cached because reading it walks every live GroovyPageMetaInfo and copies
+     * a thousand ints out of the target, and because it is the same matrix for the
+     * page class and each of its closures -- which prepare separately, so this
+     * would otherwise be read once per closure.
+     */
+    private int[] matrixFor(SourceState state, ReferenceType type) {
+        if (state.lineMatrix != null) {
+            return state.lineMatrix;
+        }
+        String pageClassName = GspSource.pageClassNameOf(type.name());
+        for (ReferenceType candidate : vm.classesByName(pageClassName)) {
+            int[] matrix = GspSource.lineNumbers(vm, candidate);
+            if (matrix != null) {
+                state.lineMatrix = matrix;
+                return matrix;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Slides an unbindable breakpoint down to the first line that could hold code
      * and tries again against the classes already loaded.
      */
     private void trySnap(SourceState state, Bp bp) {
+        if (state.ref.isGsp()) {
+            trySnapGsp(state, bp);
+            return;
+        }
         int snapped = state.ref.firstExecutableLineAtOrAfter(bp.requestedLine);
         if (snapped == bp.requestedLine) {
             // The line looks executable, so the class that owns it is probably just
@@ -303,6 +569,35 @@ public final class BreakpointBinder {
         }
     }
 
+    /**
+     * A GSP line with no code of its own moves to the next line that has some.
+     *
+     * <p>Markup cannot be read the way Groovy can -- "looks executable" means
+     * nothing about {@code &lt;/div&gt;} -- but the matrix says exactly which page
+     * lines produced generated code, so it answers this directly.
+     */
+    private void trySnapGsp(SourceState state, Bp bp) {
+        int[] matrix = state.lineMatrix;
+        if (matrix == null) {
+            bp.message = "not bound yet: " + state.ref.path().getFileName()
+                    + " has not been compiled; it is compiled the first time it renders";
+            return;
+        }
+        int snapped = GspSource.firstMappedLineAtOrAfter(matrix, bp.requestedLine, 50);
+        if (snapped == bp.requestedLine) {
+            bp.message = "line " + bp.requestedLine + " produces no code";
+            return;
+        }
+        int original = bp.line;
+        bp.line = snapped;
+        for (ReferenceType type : vm.allClasses()) {
+            if (state.ref.mayOwn(type.name()) && installOne(state, type, bp, snapped)) {
+                return;
+            }
+        }
+        bp.message = "line " + original + " has no code; moved to " + snapped;
+    }
+
     private void removeAll(SourceState state) {
         for (Bp bp : state.breakpoints) {
             for (BreakpointRequest request : bp.allRequests()) {
@@ -335,8 +630,12 @@ public final class BreakpointBinder {
         breakpoint.put("verified", bp.verified);
         breakpoint.put("line", bp.line);
         breakpoint.put("source", source);
-        if (bp.message != null) {
-            breakpoint.put("message", bp.message);
+        String message = bp.message;
+        for (String problem : bp.problems) {
+            message = message == null ? problem : message + "; " + problem;
+        }
+        if (message != null) {
+            breakpoint.put("message", message);
         }
         return breakpoint;
     }

@@ -266,24 +266,24 @@ final class UnitChecks {
         test("StopDeduper: second bci of the same line is suppressed, a fresh call is not", () -> {
             StopDeduper d = new StopDeduper();
             ThreadReference t = thread(1);
-            that(d.shouldReport(t, location("A", "m", 20, 20), 3), "first stop reports");
-            that(!d.shouldReport(t, location("A", "m", 20, 79), 3), "same line, other bci: dup");
-            that(d.shouldReport(t, location("A", "m", 21, 90), 3), "next line reports");
-            that(d.shouldReport(t, location("A", "m", 20, 20), 3), "loop back to line 20 reports");
+            that(d.shouldReport(t, location("A", "m", 20, 20), 3, 20), "first stop reports");
+            that(!d.shouldReport(t, location("A", "m", 20, 79), 3, 20), "same line, other bci: dup");
+            that(d.shouldReport(t, location("A", "m", 21, 90), 3, 21), "next line reports");
+            that(d.shouldReport(t, location("A", "m", 20, 20), 3, 20), "loop back to line 20 reports");
         });
         test("StopDeduper: depth, method, thread and forget/clear make stops distinct", () -> {
             StopDeduper d = new StopDeduper();
             ThreadReference t1 = thread(1);
             ThreadReference t2 = thread(2);
-            that(d.shouldReport(t1, location("A", "m", 5, 10), 3), "t1");
-            that(d.shouldReport(t1, location("A", "m", 5, 40), 4), "different depth reports");
-            that(d.shouldReport(t1, location("A", "n", 5, 40), 4), "different method reports");
-            that(d.shouldReport(t2, location("A", "n", 5, 99), 4), "other thread reports");
+            that(d.shouldReport(t1, location("A", "m", 5, 10), 3, 5), "t1");
+            that(d.shouldReport(t1, location("A", "m", 5, 40), 4, 5), "different depth reports");
+            that(d.shouldReport(t1, location("A", "n", 5, 40), 4, 5), "different method reports");
+            that(d.shouldReport(t2, location("A", "n", 5, 99), 4, 5), "other thread reports");
             d.forget(t1);
-            that(d.shouldReport(t1, location("A", "n", 5, 7), 4), "forgotten thread reports");
-            that(!d.shouldReport(t2, location("A", "n", 5, 3), 4), "t2 still deduped");
+            that(d.shouldReport(t1, location("A", "n", 5, 7), 4, 5), "forgotten thread reports");
+            that(!d.shouldReport(t2, location("A", "n", 5, 3), 4, 5), "t2 still deduped");
             d.clear();
-            that(d.shouldReport(t2, location("A", "n", 5, 3), 4), "cleared reports");
+            that(d.shouldReport(t2, location("A", "n", 5, 3), 4, 5), "cleared reports");
         });
     }
 

@@ -3,6 +3,8 @@ const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { registerExceptionExplainer } = require('./lib/explain-exception');
+const { registerQaPanel } = require('./lib/qa-panel');
 
 // Dedicated processes for long‑running tasks (runApp and debug)
 let gradleRunProcess = null;
@@ -761,6 +763,9 @@ function defaultSourcePaths(workspaceFolder) {
   const candidates = [
     'grails-app/controllers', 'grails-app/services', 'grails-app/domain',
     'grails-app/init', 'grails-app/utils', 'grails-app/jobs', 'grails-app/taglib',
+    // views is where the GSPs are: a page's frames and breakpoints are only
+    // resolvable if the adapter is told to look there.
+    'grails-app/views',
     'src/main/groovy', 'src/main/java', 'src/test/groovy'
   ];
   return candidates
@@ -1089,8 +1094,10 @@ const COMMAND_TREE = [
   {
     label: 'Run', icon: 'play-circle', items: [
       { label: 'Run App', command: 'grails.runApp', icon: 'play' },
+      { label: 'Run QA', command: 'grails.qa', icon: 'beaker' },
       { label: 'Debug App', command: 'grails.debug', icon: 'debug-alt' },
       { label: 'Debug Tests', command: 'grails.debugTests', icon: 'beaker' },
+      { label: 'Attach to Running App', command: 'grails.attach', icon: 'plug' },
       { label: 'Stop App', command: 'grails.stopApp', icon: 'debug-stop' },
       { label: 'Stop Debug App', command: 'grails.stopDebug', icon: 'debug-stop' }
     ]
@@ -1372,6 +1379,8 @@ function registerAdapterFactory(context) {
 }
 
 function activate(context) {
+  registerQaPanel(vscode, context);
+  registerExceptionExplainer(vscode, context);
   // The debug adapter that makes .groovy breakpoints bind at all. Registered
   // unconditionally so a hand-written launch.json of type "groovy-dap" works
   // whether or not the app was started through this extension.
@@ -1561,6 +1570,65 @@ function activate(context) {
   });
 
   // 4) Grails (Gradle): Stop Debug App
+  // Attaching to something this extension did not start: a war on a server, an
+  // application started from a terminal, a container with the agent on. Debug App
+  // covers the case where we start it, and until now that was the only way in
+  // that did not involve writing a launch.json by hand.
+  const attachCommand = vscode.commands.registerCommand('grails.attach', async () => {
+    const workspaceFolder = requireWorkspace('Grails/Groovy project');
+    if (!workspaceFolder) return;
+    const remembered = context.workspaceState.get('grails.attach.target', 'localhost:5005');
+    const target = await vscode.window.showInputBox({
+      prompt: 'Attach the Groovy debugger to a running JVM',
+      placeHolder: 'host:port',
+      value: remembered,
+      validateInput: value => {
+        const port = Number(String(value).split(':').pop());
+        return Number.isInteger(port) && port > 0 && port < 65536
+          ? null : 'Expected host:port, or just a port number';
+      }
+    });
+    if (target === undefined) {
+      return; // dismissed
+    }
+    const parts = String(target).trim().split(':');
+    const port = Number(parts.pop());
+    const hostName = parts.length ? parts.join(':') : 'localhost';
+    context.workspaceState.update('grails.attach.target', `${hostName}:${port}`);
+
+    // A second session on the same JVM would fight the first over its breakpoints.
+    const active = vscode.debug.activeDebugSession;
+    const activeConfig = active && active.type === DEBUG_TYPE ? active.configuration || {} : null;
+    if (activeConfig && Number(activeConfig.port) === port
+        && (activeConfig.hostName || 'localhost') === hostName) {
+      vscode.window.showWarningMessage(`A debugger is already attached to ${hostName}:${port}.`);
+      return;
+    }
+
+    const log = outputChannel('Grails - Debug');
+    log.appendLine(`[grails] attaching to ${hostName}:${port}`);
+    try {
+      const started = await vscode.debug.startDebugging(vscode.workspace.workspaceFolders[0], {
+        name: `Attach to ${hostName}:${port}`,
+        type: DEBUG_TYPE,
+        request: 'attach',
+        hostName,
+        port,
+        sourcePaths: defaultSourcePaths(workspaceFolder)
+      });
+      if (!started) {
+        log.appendLine('[grails] startDebugging returned false -- no session');
+        vscode.window.showErrorMessage(
+          'VSCode declined to start the debug session. See "Grails - Debug".');
+        return;
+      }
+      vscode.window.showInformationMessage(`Attached to ${hostName}:${port}.`);
+    } catch (err) {
+      log.appendLine('[grails] attach failed: ' + err.message);
+      vscode.window.showErrorMessage(`Could not attach: ${err.message}`);
+    }
+  });
+
   const stopDebugGrailsCommand = vscode.commands.registerCommand('grails.stopDebug', () => {
     if (!gradleDebugProcess) {
       vscode.window.showInformationMessage('No Grails debug process is running.');
@@ -1814,6 +1882,7 @@ function activate(context) {
     stopAppGradleCommand,
     debugGrailsAppCommand,
     debugTestsCommand,
+    attachCommand,
     stopDebugGrailsCommand
   );
 }

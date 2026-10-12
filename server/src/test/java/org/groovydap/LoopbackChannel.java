@@ -110,6 +110,17 @@ final class LoopbackChannel implements DapChannel {
         return names;
     }
 
+    /** Every event of this name that has arrived, in order. */
+    java.util.List<Map<String, Object>> events(String name) {
+        java.util.List<Map<String, Object>> out = new java.util.ArrayList<>();
+        for (Map<String, Object> m : new java.util.ArrayList<>(arrivals)) {
+            if (name.equals(m.get("event"))) {
+                out.add(m);
+            }
+        }
+        return out;
+    }
+
     Map<String, Object> lastEvent(String name) {
         for (int i = arrivals.size() - 1; i >= 0; i--) {
             if (name.equals(arrivals.get(i).get("event"))) {

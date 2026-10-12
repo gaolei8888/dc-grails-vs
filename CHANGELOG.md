@@ -2,35 +2,62 @@
 
 ## 0.2.0 (pre-release) — 2026-10-12
 
+This release merges the 0.1.14 - 0.1.30 line (conditional breakpoints, logpoints,
+data breakpoints, GSP, QA, the exception explainer; entries below) with the
+built-in debug adapter work done in parallel.
+
+### Breaking
+
+- The debug type is now `groovy-dap`, not `groovy`. A `launch.json` entry with
+  `"type": "groovy"` must be changed to `"type": "groovy-dap"`. (Another Groovy
+  extension may already own the type `groovy`, and VS Code allows one debug adapter
+  per type.) The `grails.debug.adapter` setting keeps its values (`groovy` / `java`).
+
 ### Added
 
-- **A built-in Groovy debug adapter** (debug type `groovy-dap`). Breakpoints in
-  `.groovy` files bind, closures included, and Locals / Watch show the values of
-  variables a closure captured instead of `groovy.lang.Reference`. It needs a full
-  JDK 17 or newer that includes `jdk.jdi`.
-- **Read-only variable evaluation** in Watch, hover and the Debug Console: variable
-  paths only (`a.b.c`, `list[0]`, `map['k']`); nothing is run in the application.
-- **Changing simple variable values**: literals only, for primitives and `String`.
+- **Grails 8 support**: tested against Grails 7.2.3 and 8.0.0 (Grails 8 needs Java 21
+  or newer to run the application).
 - **A `Grails: Debug App` launch configuration**, so the Run and Debug button starts
-  the app and attaches.
+  the app and attaches. A second launch while a debugger is attached is refused with
+  a warning instead of starting a second app.
 - **JDK discovery** when `JAVA_HOME` is missing: the extension searches for one
   instead of hitting the macOS `java` stub.
-- Tested against Grails 7.2.3 and 8.0.0 (Grails 8 needs Java 21 or newer).
 - Clearer errors when the adapter build fails.
+- Features carried in from the 0.1.14 - 0.1.30 line: conditional breakpoints,
+  logpoints and hit counts, data breakpoints, GSP debugging, the QA panel, and the
+  exception explainer (see the entries below). The merge itself did not exercise
+  them in a real VS Code window.
 
 ### Changed
 
 - The Grails status bar items appear only in a Grails workspace.
+- Watch, hover and the Debug Console read variable paths (`a.b.c`, `list[0]`,
+  `map['k']`) without running code in the application. Operator characters inside
+  a quoted key (`params['user-id']`) are no longer mistaken for operators.
+- Step Over and Step Into are built from breakpoints (the 0.1.30 line's design), which
+  changes what earlier 0.2.0 builds did, measured on Grails 7.2.3 and 8.0.0:
+  after a method returns, stepping stops on the next line (not mid-line); Step Into
+  now enters `@Transactional` methods; Step Into on a `.each` line stops only on the
+  first iteration (earlier builds stopped on i=1,2,3; 5 stops per request instead
+  of 7 in the nested-closure scenario); Step Into needs `sourcePaths` to be the
+  source folders the extension passes (the application root alone enters nothing).
+  On a cold JVM, Step Into still enters the closure (`closure3.doCall:23`).
+- Changing a variable accepts literals only. Putting a number into a boxed or
+  `Object` slot runs `valueOf` on one of the JDK box classes in the application, and
+  nothing else (the only code the debugger ever runs there).
 
 ### Fixed
 
 - Activation no longer fails when another extension already owns the debug type
-  `groovy`; the debugger is now registered as `groovy-dap`. `launch.json` must use
-  `"type": "groovy-dap"`.
-- Step Into on a cold JVM no longer skips the closure body.
+  `groovy`; the adapter is registered as `groovy-dap`, and the exception explainer
+  follows it.
+- Step Into on a cold JVM no longer skips the closure body (`org.apache.juli.*` is
+  excluded from stepping).
 - The variables pane no longer shows `<error>` when stopping at the start of a
-  closure; a variable that cannot be read yet is left out.
-- Other threads no longer stay marked PAUSED after stepping.
+  closure; a variable that cannot be read yet is left out, and evaluating it says it
+  is not readable yet instead of reporting an unknown name.
+- Other threads no longer stay marked PAUSED after stepping: the `continued` event
+  is now sent before the program is resumed, for continue and for every step.
 - The `Grails: Debug App` entry is no longer offered twice.
 
 ### Known limitations
@@ -39,7 +66,362 @@
   and the adapter stay until you Continue.
 - Hot reload needs a recompile; saving a source file alone changes nothing.
 - Step Into on a line with nothing to enter does nothing.
+- Editing a value from Watch (`setExpression`) is not supported yet; use the
+  Variables pane.
 - Not yet verified: F5, the F10/F11 keys, hover, and Windows / Linux.
+
+## 0.1.30 — pre-release (local)
+
+- Generate browser QA drafts with a user-selected VS Code language model using
+  bounded controller, view and Domain source excerpts. Review/edit drafts before
+  applying them; preserve Domain expectations and back up the previous plan.
+- Execute validated click, fill, select, check and assertion steps in the local
+  browser, with step logs, screenshots and failures. Show the browser by default
+  in the QA panel, including runs that reuse a selected test identity.
+- Handle missing providers, cancellation and invalid model output explicitly;
+  model output cannot execute JavaScript or shell commands.
+
+## 0.1.29 — pre-release (2026-09-08)
+
+- Distinguish an empty username search from a test database with no users.
+  Show result counts and guidance next to the selector, add Clear filter, and
+  clear stale searches when reloading or switching tenants.
+- Put the user selector before optional search controls and scroll loaded
+  choices into view even when the Output panel reduces the available space.
+
+## 0.1.28 — pre-release (local fix)
+
+- Enumerate tenants inside a read-only transaction so custom resolvers using
+  DetachedCriteria without their own transaction have a Hibernate session.
+- Log identity discovery failures in QA output and reject redirects/non-JSON
+  responses without forwarding the QA capability.
+- Disable the security chain's servlet registration only in the protected local
+  Skip process, retaining security services even when test configuration replaces
+  the external filter-chain override.
+
+## 0.1.27 — pre-release (local fix)
+
+- Load test users and tenants from the running project's test database for Skip
+  authentication. Show a tenant selector only when multi-tenancy is detected,
+  with tenant-scoped username search/pagination and explicit empty-list errors.
+- Reuse the discovery process for the QA run. Bind tenant and request context
+  before loading the selected user, support session resolver attribute names,
+  and record the chosen tenant in the report.
+- Keep discovery behind the per-run QA capability; return username projections
+  without password fields. Cancel/close/target changes release the process/lock.
+
+## 0.1.26 — pre-release (local fix)
+
+- Skip authentication now accepts a test username without a password and loads
+  the project's principal and roles for QA requests, supporting `currentUser`.
+  Scope the identity to the tool-owned loopback test process and QA browser.
+- Add a short use-case description for every Domain and browser result, shown
+  in the QA panel and JSON report without replacing frozen expectations.
+- Print browser failure details in QA output and explain remaining login redirects.
+- Add real current-user/role checks to the fixture and identity isolation checks.
+
+## 0.1.25 — pre-release (local fix)
+
+- Keep Spring Security and REST service beans enabled during local QA bypass;
+  bypass HTTP filters for that process instead of disabling the whole plugin.
+- Report the missing Spring bean name in startup failures. Extend the real
+  fixture with a dependency on the REST plugin's tokenStorageService.
+
+## 0.1.24 — pre-release (local fix)
+
+- Default UI app launch to the project's Grails test environment and database.
+  Preserve its datasource settings and migrations; temporary H2 is opt-in via
+  the target selector or `ui.database: "h2"` / `--database=h2`.
+- Allow project-configured multiple test datasources. Keep isolated Domain
+  constraint/H2 tests separate from application UI database selection.
+- Remove ANSI color/control sequences from QA logs and output while retaining
+  error text and credential redaction.
+
+## 0.1.23 — pre-release (local fix)
+
+- Detect fatal Spring Boot startup failures immediately, stop the owned QA
+  process and write the current report even when background services keep the
+  failed application alive. Explain migration SQL failures on temporary H2.
+
+## 0.1.22 — pre-release (local fix)
+
+- Stop treating `excluded-datasources` and commented examples as multiple
+  datasource declarations. Refresh launch capability gaps without changing
+  frozen test expectations.
+- Print Domain passed/failed/skipped counts and the execution error separately.
+
+## 0.1.21 — pre-release (local fix)
+
+- Supply H2 for QA inventory/tests and temporary QA application launch when
+  absent from the task runtime. Keep the application's dependency graph and
+  build files unchanged; retain an existing H2 driver when present.
+- Remove the fixture's H2 dependency so regression tests cover this case.
+
+## 0.1.20 — pre-release (local fix)
+
+- Fix QA failing to start Gradle in Windows environments that disable implicit
+  current-directory executable lookup. Invoke the workspace wrapper explicitly.
+- Add a regression test reproducing the failure, including paths and arguments
+  containing spaces.
+
+## 0.1.19 — pre-release (2026-09-06)
+
+- Add Run QA panel and standalone CLI: runtime Domain inventory, frozen
+  constraint tests, real Hibernate/H2 persistence and simple uniqueness.
+- Add browser page/form checks, screenshots and explicit coverage gaps.
+- Detect Grails Spring Security: test credentials through real login,
+  per-project/target SecretStorage, or authentication bypass only on a
+  temporary local QA instance. Existing servers cannot bypass security.
+- Bundle Playwright driver without browser binaries. Add an isolated Grails
+  fixture, real QA editor tests and frozen-baseline mutation regression.
+
+## 0.1.18 — pre-release (local build, not published)
+
+### Added
+
+- GSP syntax highlighting: HTML, Grails/custom tags, attribute expressions,
+  nested Groovy closures, directives, scriptlets and GSP comments. Embedded
+  JavaScript/CSS retain their grammars. Block comments use `%{-- … --}%`.
+- **Grails: Explain Exception** and **Grails: Show Exception Context**. An
+  exception stop exposes a status bar action. Choose an available VS Code model
+  to explain the exception using application frames and nearby workspace source.
+  Responses stream into a read-only document; cancellation, resume, provider
+  errors and missing models are handled. No locals or Grails request/session
+  values are collected, and nothing is sent automatically.
+- Real VS Code/Grails regression tests with screenshots and protocol artifacts,
+  plus TextMate grammar and simulated-provider tests.
+
+### Fixed
+
+- Attach to Running App referenced an undefined `workspaceFolder` and failed
+  after accepting the address. It now resolves and validates the workspace first.
+- Replaced stale development dependencies and the placeholder test with working
+  lint, unit and editor-test commands.
+
+### Changed
+
+- Requires VS Code **1.90+** for the Language Model API.
+- Live model generation remains unverified; real exception capture and the
+  missing-model path were tested in VS Code, streaming paths with a test provider.
+
+## 0.1.17 — pre-release
+
+### Added
+
+- **Data breakpoints.** Right-click a field in the variables pane and choose
+  Break on Value Change: the debugger stops where the write happens and says what
+  the value was and what it is about to become. Watching a field is something the
+  JVM does itself, so nothing is run in your application to arm one. It watches
+  the object you pointed at, not every instance of its class. Measured on a
+  service singleton: `dapspike.SpikeService.touches: 0 -> 1`, then `1 -> 2`, each
+  stopping on the line that wrote it.
+- **Grails: Attach to Running App.** Asks for a host and port and attaches. Until
+  now the only ways in were Debug App, which starts the application itself, and a
+  hand-written launch configuration — which left no route to an application
+  already running: a war on a server, one started from a terminal, one in a
+  container. The last target is remembered per workspace.
+
+## 0.1.16 — pre-release
+
+### Added
+
+- **A GSP breakpoint binds against an application running from a war**, not only
+  one running from the sources you have open. A page's class is named after its
+  path, so the same page is a different class in a deployment —
+  `ServletContext_resource___WEB_INF_grails_app_views_spike_page_gsp_` where the
+  sources give `C__Users_..._views_spike_page_gsp` — and the breakpoint used to
+  stay hollow. What both names contain is the path below `views`, and that is
+  what is matched on now, requiring exactly one page to match so nothing is
+  guessed. Call stacks resolve back to your copy of the file the same way.
+
+## 0.1.15 — pre-release
+
+### Fixed
+
+- **Step into produced nothing at all, in any project with more than one
+  top-level package.** The method entry request it arms carried one class filter
+  per package, and JDI ANDs the filters on a request rather than OR-ing them, so
+  a class had to be in every package at once. With a single package — which is
+  what the one project this was measured on had — it worked, and it silently
+  stopped working the moment there were two. One request per pattern now.
+- **Step over inside a GSP no longer stops twice on one line of markup.** It
+  compared generated line numbers, and one page line is several generated lines:
+  stepping off page line 4 stopped on page line 9, then on page line 9 again,
+  with the highlight not moving. It compares the line you see now.
+
+### Added
+
+- **Step into enters a GSP tag body.** A page compiles into a class in the
+  default package, which no package filter can match, so stepping into
+  `<g:each>` or a custom tag never reached the closure the body compiled into.
+  Measured: from the line that invokes the body, into the body at the page line
+  it starts on.
+- An icon, so the Marketplace listing is not a placeholder letter. Three bars and
+  a play triangle, the same glyph as the activity bar, rasterised by
+  `scripts/make-icon.py` — deliberately not the Grails logo, which is a
+  trademark.
+
+### Note
+
+- **Grails 7.2.3 does not precompile GSPs at all.** There is no `compileGsp`
+  task, and a packaged war carries the page source rather than a compiled class,
+  so the precompiled-page machinery inside Grails is never exercised by this
+  version's build and nothing here needs to read it. Pages are compiled at
+  runtime in a war exactly as in a development run.
+
+## 0.1.14 — pre-release
+
+### Added
+
+- **Breakpoints bind in `.gsp` files.** A page line stops on the right line, the
+  call stack shows the `.gsp` and the page's own line numbers, and the Grails
+  scope and variables work there as anywhere else.
+- There is no SMAP behind this. A GSP compiles to a class named after the page's
+  path with every non-alphanumeric character turned into an underscore, reporting
+  no source file and no second stratum, and the only mapping that exists at
+  runtime is an `int[]` field on `GroovyPageMetaInfo`, indexed by generated line
+  and valued by page line. It is read as a field, so nothing runs in the
+  application to place a breakpoint.
+- **A page line stops once**, not two or three times. One line of markup becomes
+  several generated statements across several classes — `${item * 2}` is a call
+  and a closure on one generated line, in two classes — so the breakpoint goes on
+  the outermost class that owns any of them, at the first line it owns.
+- A GSP line that generates nothing, a closing tag or blank markup, says so on
+  the breakpoint once the page has been compiled. Before that it says the page
+  has not been compiled yet, which is the only true answer: a GSP is compiled the
+  first time it renders.
+
+### Note
+
+- **Precompiled GSPs are not supported.** A production build compiles pages ahead
+  of time and keeps their line numbers in a resource file rather than in memory;
+  this reads the in-memory matrix, which is what a development run has.
+
+## 0.1.13 — pre-release
+
+### Fixed
+
+- **Stepping two stopped threads no longer loses one of them.** The requests a
+  step is built from lived in one set, so stepping a second stopped thread
+  deleted the first thread's and it never stopped again — its request ran to
+  completion while the debugger waited. With every thread stopped at a
+  breakpoint, which is how this debugger stops, having two of them and stepping
+  either is ordinary rather than a corner. Measured with two requests in flight:
+  five stops each, interleaved, where before the second thread took over
+  entirely.
+
+## 0.1.12 — pre-release
+
+### Added
+
+- **Change a value while stopped.** Locals, fields, array elements and map
+  entries that already exist can be set from the variables pane; numbers,
+  strings, booleans and null. Measured end to end: setting `seed` from 4 to 7 at
+  the top of a service method changed the response the application returned.
+- A local a closure captured is written inside its `groovy.lang.Reference` rather
+  than over it. Replacing the box would leave the closure holding the old one, so
+  the program would not see the change.
+- A map entry is changed by writing the entry itself, which is the write `put`
+  would do for a key that is already there. A key that is not there cannot be
+  added this way, and says so rather than appearing to work.
+
+### Note
+
+- **Making a boxed number calls `valueOf` in the application.** JDI will not put
+  an int into a slot typed `java.lang.Integer`, and Groovy types nearly
+  everything that way, so setting a variable would otherwise be able to change
+  almost nothing. This is the one place the adapter runs code in the target: it
+  is limited to `valueOf` on the eight JDK box classes, which take no locks and
+  have no side effects, and it runs single-threaded. Reading — a hover, a
+  logpoint, a condition, the pane — still never runs anything.
+
+## 0.1.11 — pre-release
+
+### Added
+
+- **Conditional breakpoints**, for comparisons: `params.id == '5'`, `i > 3`,
+  `user.name != null`. A full condition means compiling a Groovy expression and
+  running it inside the application, but the conditions people type are two
+  paths or literals around an operator, and paths were already readable. Names
+  from the Grails scope work here too, so `params.action == 'index'` is a
+  condition although `params` is not a local. Anything else — a call, arithmetic,
+  a closure — is reported on the breakpoint, and such a breakpoint stops every
+  time rather than never: a breakpoint that silently never fires reads as a
+  broken debugger.
+- **Step into enters a `@Transactional` method.** It could not before: the entry
+  runs through Grails' transaction template, so the step completed back on the
+  calling line, having run the whole method. Entering one of the project's own
+  methods is now asked for directly instead of stepped towards. Stepping into
+  `(1..3).each { i ->` lands in the closure body.
+
+### Fixed
+
+- **A step no longer skips the last line of a method.** The lines it armed took
+  only the first bytecode of each line, and Groovy compiles a statement twice
+  under one line number with the second copy often the one that runs — so the
+  armed copy never executed and the step came out in the caller instead. Present
+  since 0.1.9, where it went unnoticed because the method measured there happens
+  to run the first copy of every line.
+- When a condition and a hit count are both set, the count advances only when the
+  condition was true, so `i > 1` with `=2` stops the second time `i > 1` holds.
+
+### Note
+
+- **Step out was verified for the first time**, having never been executed
+  before: it walks the three line-less frames Grails puts between a transactional
+  method and its caller, and stepping out of the outermost frame of your own code
+  runs on, there being nothing above it to stop in.
+
+## 0.1.10 — pre-release
+
+### Added
+
+- **Logpoints.** A breakpoint with a log message prints and carries on instead of
+  stopping — right-click in the gutter, Add Logpoint. `{expressions}` in braces
+  are read the same way a hover is, so `iteration {i}, so far {doubled}` prints
+  `iteration 2, so far [105, 106]`. Being able to see a value on every pass
+  without stopping the application on every pass is most of what print debugging
+  was for, and unlike a `println` it does not need a recompile or a restart.
+- Lists and maps are written out in a log line rather than shown as an object id.
+  The pane can say `ArrayList (id=14513)` and let you expand it; a line of text
+  cannot. Capped at eight entries and two levels deep.
+- **Hit counts.** `>`, `>=`, `=`, `<`, `<=` and `%` with a number, and a bare
+  number meaning "from this hit onward" — so `=100` stops on the hundredth
+  iteration only, and `%10` on every tenth. The count is of hits that were going
+  to stop, so the duplicate a doubly-compiled Groovy line produces does not
+  advance it. A hit count that cannot be read says so on the breakpoint rather
+  than being ignored, which would look like the debugger stopping when it should
+  not.
+
+## 0.1.9 — pre-release
+
+### Fixed
+
+- **Step over no longer runs to the end of the method.** Issued partway through a
+  line -- which is exactly where a returning call leaves you -- a JDI step over
+  produced no event at all here: the remaining lines ran and the next event arrived
+  once the frame had popped. Three attempts at characterising when it does that
+  came to nothing (exclusion filters, count filters, and the position within the
+  line each ruled out by measurement), so step over no longer uses JDI stepping.
+  It says what a step over means directly: a breakpoint on the first location of
+  every other line of the method, plus a method exit for the return, whichever
+  comes first.
+- Returning from a call now continues in the caller rather than stopping twice on
+  the line being returned from, and climbs past the wrapper frames Grails puts
+  between a transactional method and its caller, which have no line numbers to
+  stop on.
+
+## 0.1.8 — pre-release
+
+### Added
+
+- **Hover and watch**, for anything shaped like a path: a name, a field chain, a
+  map key, an index. Names from the Grails scope resolve as well, so `params` and
+  `request` answer in a hover although neither is in the source.
+- Read rather than run. A call, an operator or a closure is refused by name and
+  with the reason, because running code in the application to answer a hover can
+  deadlock it or change what is being looked at -- and reporting "no such field"
+  about `list.size()` would be a wrong answer about something that exists.
 
 ## 0.1.7 — pre-release
 

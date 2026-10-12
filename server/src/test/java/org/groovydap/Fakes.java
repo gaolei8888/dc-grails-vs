@@ -21,7 +21,10 @@ final class Fakes {
                 (proxy, method, args) -> {
                     // ObjectReference/ClassType/ThreadReference.invokeMethod, newInstance:
                     // the only ways to run application code. Reading is never one of them.
-                    if (method.getName().startsWith("invoke") || method.getName().equals("newInstance")) {
+                    // A fake that lists one in `methods` has opted in (a check that pins
+                    // exactly which invocations are allowed); anything else still fails.
+                    if ((method.getName().startsWith("invoke") || method.getName().equals("newInstance"))
+                            && !methods.containsKey(method.getName())) {
                         INVOCATIONS.add(label + "." + method.getName());
                         throw new AssertionError("read-only violated: " + label + "." + method.getName());
                     }

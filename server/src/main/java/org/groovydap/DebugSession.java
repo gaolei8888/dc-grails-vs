@@ -18,18 +18,28 @@ import com.sun.jdi.event.Event;
 import com.sun.jdi.event.ExceptionEvent;
 import com.sun.jdi.event.EventQueue;
 import com.sun.jdi.event.EventSet;
+import com.sun.jdi.event.MethodEntryEvent;
+import com.sun.jdi.event.ModificationWatchpointEvent;
+import com.sun.jdi.event.MethodExitEvent;
 import com.sun.jdi.event.StepEvent;
+import com.sun.jdi.event.WatchpointEvent;
 import com.sun.jdi.event.VMDeathEvent;
 import com.sun.jdi.event.VMDisconnectEvent;
 import com.sun.jdi.request.BreakpointRequest;
 import com.sun.jdi.request.EventRequest;
+import com.sun.jdi.request.EventRequestManager;
 import com.sun.jdi.request.ExceptionRequest;
+import com.sun.jdi.request.MethodEntryRequest;
+import com.sun.jdi.request.MethodExitRequest;
 import com.sun.jdi.request.StepRequest;
 import org.groovydap.dap.DapChannel;
 import org.groovydap.dap.DapTransport;
 import org.groovydap.jdi.BreakpointBinder;
-import org.groovydap.jdi.EvaluationException;
+import org.groovydap.jdi.Condition;
+import org.groovydap.jdi.DataPoints;
 import org.groovydap.jdi.GrailsWebScope;
+import org.groovydap.jdi.GspSource;
+import org.groovydap.jdi.PathEvaluator;
 import org.groovydap.jdi.SourceLocator;
 import org.groovydap.jdi.StopDeduper;
 import org.groovydap.jdi.Variables;
@@ -42,9 +52,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Supplier;
 
 /**
  * One debug session: the DAP request loop on one side, a JDI connection to the
@@ -110,6 +120,13 @@ public final class DebugSession {
     private final StopDeduper deduper = new StopDeduper();
     private final Variables variables = new Variables();
 
+    private final DataPoints dataPoints = new DataPoints();
+    /** What to call a watched field when it fires. */
+    private final Map<EventRequest, String> watchLabels = new ConcurrentHashMap<>();
+
+    /** Generated-line to page-line matrices, by page class name. */
+    private final Map<String, int[]> gspMatrices = new ConcurrentHashMap<>();
+
     private final Map<Long, Integer> threadIds = new ConcurrentHashMap<>();
     private final Map<Integer, ThreadReference> threadsById = new ConcurrentHashMap<>();
     private final AtomicInteger nextThreadId = new AtomicInteger(1);
@@ -127,6 +144,17 @@ public final class DebugSession {
     private final Map<Long, Integer> stepDepths = new ConcurrentHashMap<>();
     private final Map<Long, Integer> stepOriginFrames = new ConcurrentHashMap<>();
     private final Map<Long, Integer> restepBudget = new ConcurrentHashMap<>();
+    /**
+      * Requests standing in for the steps JDI cannot do here, per thread.
+      *
+      * <p>Per thread because every one of them is thread-filtered and a step is
+      * always a step of one thread. Held in one set, arming a step on a second
+      * stopped thread deleted the first thread's requests and overwrote the frame
+      * depth it was measured against -- and with allThreadsStopped, having two
+      * threads stopped and stepping either of them is ordinary.
+      */
+    private final Map<Long, Set<EventRequest>> stepAssist = new ConcurrentHashMap<>();
+    private final Map<Long, Integer> assistOriginFrames = new ConcurrentHashMap<>();
 
     public DebugSession(InputStream in, OutputStream out) {
         this(new DapTransport(in, out));
@@ -173,14 +201,15 @@ public final class DebugSession {
             case "stackTrace": onStackTrace(request); break;
             case "scopes": onScopes(request); break;
             case "variables": onVariables(request); break;
+            case "setVariable": onSetVariable(request); break;
+            case "dataBreakpointInfo": onDataBreakpointInfo(request); break;
+            case "setDataBreakpoints": onSetDataBreakpoints(request); break;
             case "continue": onContinue(request); break;
             case "next": onStep(request, StepRequest.STEP_OVER); break;
             case "stepIn": onStep(request, StepRequest.STEP_INTO); break;
             case "stepOut": onStep(request, StepRequest.STEP_OUT); break;
             case "pause": onPause(request); break;
             case "evaluate": onEvaluate(request); break;
-            case "setVariable": onSetVariable(request); break;
-            case "setExpression": onSetExpression(request); break;
             case "disconnect":
             case "terminate":
                 transport.sendResponse(request, null);
@@ -197,14 +226,18 @@ public final class DebugSession {
         capabilities.put("supportsTerminateRequest", Boolean.TRUE);
         // Not yet: conditional breakpoints need Groovy expressions compiled and
         // evaluated inside the target VM, which is the T2 work item.
-        capabilities.put("supportsConditionalBreakpoints", Boolean.FALSE);
-        // Variable paths only (a, a.b, list[0], map['k']): resolved by reading the
-        // variables tree, never by running code in the target.
+        // Comparisons, which is what conditions nearly always are. Anything else
+        // is reported on the breakpoint rather than silently ignored; see Condition.
+        capabilities.put("supportsConditionalBreakpoints", Boolean.TRUE);
+        // These two need no expression compiler either: a hit count is arithmetic,
+        // and a log message is the path reading that already answers hovers.
+        capabilities.put("supportsHitConditionalBreakpoints", Boolean.TRUE);
+        capabilities.put("supportsLogPoints", Boolean.TRUE);
         capabilities.put("supportsEvaluateForHovers", Boolean.TRUE);
-        // Literals only (numbers, true/false, 'c', "text", null), into a local, an
-        // instance field or an array element; see ValueParser for what is refused.
         capabilities.put("supportsSetVariable", Boolean.TRUE);
-        capabilities.put("supportsSetExpression", Boolean.TRUE);
+        // Watchpoints are a JVM facility, not something to be built: the VM
+        // reports a write to a field and says what it was and what it will be.
+        capabilities.put("supportsDataBreakpoints", Boolean.TRUE);
         capabilities.put("supportsExceptionInfoRequest", Boolean.TRUE);
         capabilities.put("exceptionBreakpointFilters", List.of(
                 filter("uncaught", "Uncaught exceptions", true),
@@ -284,18 +317,23 @@ public final class DebugSession {
             return;
         }
 
-        List<Integer> lines = new ArrayList<>();
+        List<BreakpointBinder.Spec> specs = new ArrayList<>();
         Object raw = args.get("breakpoints");
         if (raw instanceof List) {
             for (Object item : (List<?>) raw) {
                 if (item instanceof Map) {
-                    lines.add((int) number(((Map<?, ?>) item).get("line"), 0));
+                    Map<?, ?> entry = (Map<?, ?>) item;
+                    specs.add(new BreakpointBinder.Spec(
+                            (int) number(entry.get("line"), 0),
+                            text(entry.get("logMessage")),
+                            text(entry.get("hitCondition")),
+                            text(entry.get("condition"))));
                 }
             }
         }
 
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("breakpoints", binder.setBreakpoints(path, lines));
+        body.put("breakpoints", binder.setBreakpoints(path, specs));
         transport.sendResponse(request, body);
     }
 
@@ -353,7 +391,7 @@ public final class DebugSession {
         // the depth; DAP hands it back verbatim in scopes.
         entry.put("id", frameId(thread, index));
         entry.put("name", location.declaringType().name() + "." + location.method().name());
-        entry.put("line", Math.max(location.lineNumber(), 0));
+        entry.put("line", displayLine(location));
         entry.put("column", 1);
 
         Path file = sources.find(location);
@@ -366,6 +404,48 @@ public final class DebugSession {
             entry.put("presentationHint", "subtle");
         }
         return entry;
+    }
+
+    /**
+     * The line to show for a frame: its own, unless it came from a GSP.
+     *
+     * <p>A GSP's classes carry the line numbers of the Groovy generated from the
+     * page, which are not the page's. Nothing else reports the difference -- the
+     * frame would land on line 30 of a nine line file -- so it is translated here
+     * through the page's line matrix. See {@link GspSource}.
+     */
+    private int displayLine(Location location) {
+        int line = location.lineNumber();
+        Path file = sources.find(location);
+        if (file == null || !GspSource.isGsp(file.toString())) {
+            return Math.max(line, 0);
+        }
+        int[] matrix = gspMatrixFor(location.declaringType());
+        if (matrix == null) {
+            return Math.max(line, 0);
+        }
+        int page = GspSource.gspLine(matrix, line);
+        return page > 0 ? page : Math.max(line, 0);
+    }
+
+    /** A page's line matrix, cached: reading one copies a thousand ints back. */
+    private int[] gspMatrixFor(com.sun.jdi.ReferenceType type) {
+        String pageClassName = GspSource.pageClassNameOf(type.name());
+        int[] known = gspMatrices.get(pageClassName);
+        if (known != null) {
+            return known;
+        }
+        for (com.sun.jdi.ReferenceType candidate : vm.classesByName(pageClassName)) {
+            int[] matrix = GspSource.lineNumbers(vm, candidate);
+            if (matrix != null) {
+                // Not cached until it is found: before the page has run there is
+                // no matrix to read, and caching that absence would keep every
+                // later frame in the page showing a generated line number.
+                gspMatrices.put(pageClassName, matrix);
+                return matrix;
+            }
+        }
+        return null;
     }
 
     private void onScopes(Map<String, Object> request) {
@@ -400,64 +480,6 @@ public final class DebugSession {
         transport.sendResponse(request, body);
     }
 
-    /**
-     * Watch, hover and Debug Console. Read-only by construction: the expression is a
-     * variable path, resolved by {@link Variables#evaluate}, because evaluating
-     * anything else would mean invoking a method in the target.
-     */
-    private void onEvaluate(Map<String, Object> request) {
-        Map<String, Object> args = arguments(request);
-        ThreadReference thread = frameThread(args);
-        respond(request, "evaluate", thread, () -> variables.evaluate(thread, frameIndex(args),
-                () -> GrailsWebScope.find(vm, thread), text(args.get("expression"))));
-    }
-
-    /** The Variables panel's "Set Value": a literal into a local, a field or an array element. */
-    private void onSetVariable(Map<String, Object> request) {
-        Map<String, Object> args = arguments(request);
-        respond(request, "change a variable", stoppedThread, () -> variables.setVariable(
-                (int) number(args.get("variablesReference"), 0),
-                text(args.get("name")), text(args.get("value"))));
-    }
-
-    /** Watch's "Set Value": the same write, found by walking a variable path. */
-    private void onSetExpression(Map<String, Object> request) {
-        Map<String, Object> args = arguments(request);
-        ThreadReference thread = frameThread(args);
-        respond(request, "change a variable", thread, () -> variables.setExpression(thread,
-                frameIndex(args), () -> GrailsWebScope.find(vm, thread),
-                text(args.get("expression")), text(args.get("value"))));
-    }
-
-    /** The thread a request's frameId names; a Debug Console line with no frame uses the stopped one. */
-    private ThreadReference frameThread(Map<String, Object> args) {
-        return args.get("frameId") instanceof Number
-                ? threadsById.get((int) number(args.get("frameId"), -1) >> 16) : stoppedThread;
-    }
-
-    private static int frameIndex(Map<String, Object> args) {
-        return args.get("frameId") instanceof Number
-                ? (int) number(args.get("frameId"), -1) & 0xFFFF : 0;
-    }
-
-    /** Answers with {@code work}, or with why not: never throws, never changes what is suspended. */
-    private void respond(Map<String, Object> request, String doing, ThreadReference thread,
-            Supplier<Map<String, Object>> work) {
-        try {
-            if (vm == null || thread == null || !thread.isSuspended()) {
-                transport.sendError(request, "no stopped frame to " + doing + " in "
-                        + "(the program is running, or has resumed since this frame was shown)");
-                return;
-            }
-            transport.sendResponse(request, work.get());
-        } catch (EvaluationException e) {
-            transport.sendError(request, e.getMessage());
-        } catch (Exception e) {
-            transport.sendError(request, "cannot " + doing + ": " + e.getClass().getSimpleName()
-                    + (e.getMessage() == null ? "" : ": " + e.getMessage()));
-        }
-    }
-
     private void onVariables(Map<String, Object> request) {
         Map<String, Object> args = arguments(request);
         int reference = (int) number(args.get("variablesReference"), 0);
@@ -466,29 +488,195 @@ public final class DebugSession {
         transport.sendResponse(request, body);
     }
 
+    /**
+     * What can be watched about a variable, if anything.
+     *
+     * <p>Answered for a field and refused for everything else, because a field is
+     * what the JVM can report a write to. The client shows "break on value
+     * change" only where this returns an id.
+     */
+    private void onDataBreakpointInfo(Map<String, Object> request) {
+        Map<String, Object> args = arguments(request);
+        String name = String.valueOf(args.get("name"));
+        int reference = (int) number(args.get("variablesReference"), 0);
+        Map<String, Object> body = new LinkedHashMap<>();
+        String dataId = reference > 0 ? variables.watchable(reference, name, dataPoints) : null;
+        if (dataId == null) {
+            body.put("dataId", null);
+            body.put("description", vm != null && !vm.canWatchFieldModification()
+                    ? "this VM cannot watch field modification"
+                    : name + " is not a field; only fields can be watched");
+        } else {
+            DataPoints.Point point = dataPoints.get(dataId);
+            body.put("dataId", dataId);
+            body.put("description", point.label
+                    + (point.instance == null ? " (any instance)" : " (this instance)"));
+            body.put("accessTypes", List.of("write", "read", "readWrite"));
+            // The id names an object in this connection to this VM; remembered
+            // for a later session it would name nothing.
+            body.put("canPersist", Boolean.FALSE);
+        }
+        transport.sendResponse(request, body);
+    }
+
+    /**
+     * Replaces the data breakpoints.
+     *
+     * <p>Whole-list, the way setBreakpoints is: the client sends what it wants to
+     * exist, so what exists is deleted first.
+     */
+    private void onSetDataBreakpoints(Map<String, Object> request) {
+        EventRequestManager erm = vm.eventRequestManager();
+        // JDI keeps the two kinds in separate lists; there is no combined one.
+        List<EventRequest> existing = new ArrayList<>();
+        existing.addAll(erm.modificationWatchpointRequests());
+        existing.addAll(erm.accessWatchpointRequests());
+        for (EventRequest watch : existing) {
+            erm.deleteEventRequest(watch);
+        }
+        watchLabels.clear();
+
+        List<Map<String, Object>> answers = new ArrayList<>();
+        Object raw = arguments(request).get("breakpoints");
+        if (raw instanceof List) {
+            for (Object item : (List<?>) raw) {
+                answers.add(item instanceof Map
+                        ? armWatchpoint((Map<?, ?>) item) : refused("not a breakpoint"));
+            }
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("breakpoints", answers);
+        transport.sendResponse(request, body);
+    }
+
+    private Map<String, Object> armWatchpoint(Map<?, ?> spec) {
+        DataPoints.Point point = dataPoints.get(String.valueOf(spec.get("dataId")));
+        if (point == null) {
+            return refused("that variable belongs to an earlier stop and is gone");
+        }
+        String access = spec.get("accessType") == null
+                ? "write" : String.valueOf(spec.get("accessType"));
+        try {
+            EventRequestManager erm = vm.eventRequestManager();
+            List<EventRequest> armed = new ArrayList<>();
+            if (!access.equals("read")) {
+                armed.add(erm.createModificationWatchpointRequest(point.field));
+            }
+            if (!access.equals("write")) {
+                if (!vm.canWatchFieldAccess()) {
+                    return refused("this VM cannot watch field access, only modification");
+                }
+                armed.add(erm.createAccessWatchpointRequest(point.field));
+            }
+            for (EventRequest watch : armed) {
+                if (point.instance != null) {
+                    // The user pointed at one object, not at the class.
+                    ((com.sun.jdi.request.WatchpointRequest) watch)
+                            .addInstanceFilter(point.instance);
+                }
+                watch.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+                watch.enable();
+                watchLabels.put(watch, point.label);
+            }
+            Map<String, Object> answer = new LinkedHashMap<>();
+            answer.put("verified", Boolean.TRUE);
+            return answer;
+        } catch (Exception e) {
+            return refused(e.getClass().getSimpleName()
+                    + (e.getMessage() == null ? "" : ": " + e.getMessage()));
+        }
+    }
+
+    private static Map<String, Object> refused(String reason) {
+        Map<String, Object> answer = new LinkedHashMap<>();
+        answer.put("verified", Boolean.FALSE);
+        answer.put("message", reason);
+        return answer;
+    }
+
+    /** A watched field was read or written. */
+    private Runnable onWatchpoint(WatchpointEvent event) {
+        ThreadReference thread = event.thread();
+        String label = watchLabels.getOrDefault(event.request(), event.field().name());
+        String description;
+        if (event instanceof ModificationWatchpointEvent) {
+            ModificationWatchpointEvent write = (ModificationWatchpointEvent) event;
+            description = label + ": " + variables.plain(write.valueCurrent())
+                    + " -> " + variables.plain(write.valueToBe());
+        } else {
+            description = label + " was read: " + variables.plain(event.valueCurrent());
+        }
+        stoppedThread = thread;
+        variables.reset();
+        deduper.forget(thread);
+        return () -> sendStopped("data breakpoint", thread, new ArrayList<>(), description);
+    }
+
+    /**
+     * Changes a value while the target is stopped.
+     *
+     * <p>Writes only: a local, a field, an array element, a map entry that is
+     * already there. Making a boxed number is the one thing that calls into the
+     * application -- see ValueFactory -- because JDI will not put an int into a
+     * slot typed Integer and Groovy types nearly everything that way.
+     */
+    private void onSetVariable(Map<String, Object> request) {
+        Map<String, Object> args = arguments(request);
+        int reference = (int) number(args.get("variablesReference"), 0);
+        String name = String.valueOf(args.get("name"));
+        String value = String.valueOf(args.get("value"));
+        try {
+            Map<String, Object> described =
+                    variables.set(reference, name, value, stoppedThread);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("value", described.get("value"));
+            body.put("type", described.get("type"));
+            body.put("variablesReference", described.get("variablesReference"));
+            transport.sendResponse(request, body);
+        } catch (PathEvaluator.Unsupported e) {
+            transport.sendError(request, e.getMessage());
+        } catch (Exception e) {
+            transport.sendError(request, e.getClass().getSimpleName()
+                    + (e.getMessage() == null ? "" : ": " + e.getMessage()));
+        }
+    }
+
+    /**
+     * A hover, a watch or a repl line, answered by reading rather than running.
+     *
+     * <p>Which is most of what is asked: a name, a field path, a map key. What it
+     * cannot do -- a call, an operator, a closure -- it says so about, because
+     * "no such field" would be a wrong answer about something that exists.
+     */
+    private void onEvaluate(Map<String, Object> request) {
+        Map<String, Object> args = arguments(request);
+        int frameId = (int) number(args.get("frameId"), -1);
+        ThreadReference thread = threadsById.get(frameId >> 16);
+        int frameIndex = frameId & 0xFFFF;
+        if (thread == null) {
+            transport.sendError(request, "no frame to evaluate against");
+            return;
+        }
+        try {
+            StackFrame frame = thread.frame(frameIndex);
+            Value value = PathEvaluator.evaluate(String.valueOf(args.get("expression")),
+                    frame, GrailsWebScope.find(vm, thread));
+            transport.sendResponse(request, variables.describeResult(value));
+        } catch (PathEvaluator.Unsupported e) {
+            transport.sendError(request, e.getMessage());
+        } catch (Exception e) {
+            transport.sendError(request, e.getClass().getSimpleName()
+                    + (e.getMessage() == null ? "" : ": " + e.getMessage()));
+        }
+    }
+
     private void onContinue(Map<String, Object> request) {
+        clearAllStepAssist(); // a continue resumes every thread, so no step survives
         Map<String, Object> args = arguments(request);
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("allThreadsContinued", Boolean.TRUE);
         transport.sendResponse(request, body);
         sendContinued((int) number(args.get("threadId"), 0));
-        resumeTarget();
-    }
-
-    private void onStep(Map<String, Object> request, int depth) {
-        Map<String, Object> args = arguments(request);
-        ThreadReference thread = threadsById.get((int) number(args.get("threadId"), -1));
-        if (thread == null || vm == null) {
-            transport.sendError(request, "no such thread");
-            return;
-        }
-        stepDepths.put(thread.uniqueID(), depth);
-        stepOriginFrames.put(thread.uniqueID(), frameCountOf(thread));
-        restepBudget.put(thread.uniqueID(), MAX_AUTOMATIC_RESTEPS);
-        requestStep(thread, depth);
-
-        transport.sendResponse(request, null);
-        sendContinued(idOf(thread));
         resumeTarget();
     }
 
@@ -504,6 +692,254 @@ public final class DebugSession {
         event.put("threadId", threadId);
         event.put("allThreadsContinued", Boolean.TRUE);
         transport.sendEvent("continued", event);
+    }
+
+    private void onStep(Map<String, Object> request, int depth) {
+        Map<String, Object> args = arguments(request);
+        ThreadReference thread = threadsById.get((int) number(args.get("threadId"), -1));
+        if (thread == null || vm == null) {
+            transport.sendError(request, "no such thread");
+            return;
+        }
+        stepDepths.put(thread.uniqueID(), depth);
+        stepOriginFrames.put(thread.uniqueID(), frameCountOf(thread));
+        restepBudget.put(thread.uniqueID(), MAX_AUTOMATIC_RESTEPS);
+        // Step over and step into never go through JDI stepping. Where a step over
+        // lands was not predictable here: issuing one partway through a line ran to
+        // the end of the method, and after three attempts at characterising when
+        // else it does that -- exclusion filters, count filters, the shape of the
+        // previous stop -- a step from the first bytecode of a line did it too. A
+        // step into has a different problem with the same shape: it cannot enter a
+        // @Transactional method, because the entry runs through the transaction
+        // template and the step completes back on the calling line. Both are said
+        // directly instead, out of breakpoints, and neither is subject to any of
+        // that. Step out still uses JDI, where it was measured working.
+        boolean armed = depth == StepRequest.STEP_OVER ? armLineStep(thread)
+                : depth == StepRequest.STEP_INTO && armStepInto(thread);
+        if (!armed) {
+            requestStep(thread, depth);
+        }
+
+        transport.sendResponse(request, null);
+        sendContinued(idOf(thread));
+        resumeTarget();
+    }
+
+    /**
+     * A step over built out of breakpoints, for where JDI will not do one.
+     *
+     * <p>A STEP_OVER issued while the thread is partway through a line -- exactly
+     * where a returning call leaves it -- runs to the end of the method instead of
+     * stopping at the next line. Measured repeatedly: from index line 9 at bci 104,
+     * lines 10 and 11 execute, no step event is generated for either, and the next
+     * event arrives once the frame has popped. Class exclusion filters and the
+     * count filter were both ruled out as the cause; what remains is that the
+     * request does not behave, so this stops asking it to.
+     *
+     * <p>The semantics of a step over are "stop at the next line reached in this
+     * frame, or when it returns". Both halves can be said directly: a breakpoint on
+     * the first location of every other line of this method, and a method exit
+     * request for the return. Whichever happens first is the answer.
+     *
+     * @return false if the method has no line table to work from, in which case the
+     *     caller should fall back to an ordinary step
+     */
+    private boolean armLineStep(ThreadReference thread) {
+        try {
+            return armLineStepAt(thread, thread.frame(0).location(), frameCountOf(thread));
+        } catch (Exception e) {
+            clearStepAssist(thread);
+            return false;
+        }
+    }
+
+    private boolean armLineStepAt(ThreadReference thread, Location here, int originFrames) {
+        try {
+            List<Location> lines = here.method().allLineLocations();
+            if (lines.isEmpty()) {
+                return false;
+            }
+            clearStepAssist(thread);
+            assistOriginFrames.put(thread.uniqueID(), originFrames);
+            Set<EventRequest> armed = assistFor(thread);
+            EventRequestManager erm = vm.eventRequestManager();
+
+            // Every location of every other line, not the first of each. Groovy
+            // compiles a statement twice under one line number and the copy that
+            // runs is not always the first: line 34 of the target maps to bci 26
+            // and bci 73, and only 73 ever executes, so arming the first location
+            // armed the path that never runs. Measured as a step into that skipped
+            // the last line of the method and came out in the caller. This is the
+            // same rule BreakpointBinder follows, and for the same reason; the
+            // duplicate it can cause is removed by clearing the whole set on the
+            // first arrival.
+            int from = displayLine(here);
+            for (Location location : lines) {
+                // The line the user sees, not the one in the class file. A GSP
+                // page line is several generated lines -- line 9 of the target is
+                // generated 37 and 38 -- so comparing generated lines produced a
+                // step over that stopped twice on one line of markup without the
+                // highlight moving.
+                if (displayLine(location) == from) {
+                    continue;
+                }
+                BreakpointRequest at = erm.createBreakpointRequest(location);
+                at.addThreadFilter(thread);
+                at.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+                at.enable();
+                armed.add(at);
+            }
+
+            MethodExitRequest exit = erm.createMethodExitRequest();
+            exit.addThreadFilter(thread);
+            exit.addClassFilter(here.declaringType());
+            exit.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+            exit.enable();
+            armed.add(exit);
+            return !armed.isEmpty();
+        } catch (Exception e) {
+            clearStepAssist(thread);
+            return false;
+        }
+    }
+
+    /**
+     * A step into, said directly: stop wherever the project's code runs next.
+     *
+     * <p>Which is either a method it enters or, if this line calls nothing of the
+     * user's, the next line of this one -- so it is a step over with a method entry
+     * request added. That last part is not a compromise; it is what a step into
+     * means on a line with no call in it.
+     *
+     * <p>The entry request is why this works on a {@code @Transactional} method
+     * where a JDI step into does not. Grails routes the call through the
+     * transaction template, so the step completes back on the calling line, having
+     * run the whole method. Entering {@code $tt__foo} is a fact about the target
+     * that no amount of stepping reaches, and asking for it directly costs one
+     * request. The wrappers on the way -- {@code foo}, the callback closure,
+     * {@code foo$0} -- are passed over by the same rule everything else uses: no
+     * line number, nowhere to stop.
+     *
+     * @return false if the project's packages could not be worked out, in which
+     *     case an unfiltered method entry request would be far too expensive and
+     *     the caller should fall back to JDI stepping
+     */
+    private boolean armStepInto(ThreadReference thread) {
+        List<String> packages = new ArrayList<>(sources.packageFilters());
+        // A GSP compiles into a class in the default package, named after the
+        // page's path, so no package filter built from directory names can match
+        // it -- and without this, stepping into a tag body from a page never
+        // enters the closure the body compiled into.
+        String page = currentGspClass(thread);
+        if (page != null) {
+            packages.add(page + "*");
+        }
+        if (packages.isEmpty()) {
+            return false;
+        }
+        if (!armLineStep(thread)) {
+            return false;
+        }
+        try {
+            // One request per pattern. JDI ANDs the filters on a request, so the
+            // patterns cannot share one: with a single package that went unnoticed,
+            // and the moment there were six -- one per directory under the source
+            // roots -- every class had to match all six and no method entry event
+            // was ever generated. Measured as a step into that produced nothing at
+            // all, anywhere, not only in a GSP.
+            for (String pattern : packages) {
+                MethodEntryRequest entry = vm.eventRequestManager().createMethodEntryRequest();
+                entry.addThreadFilter(thread);
+                entry.addClassFilter(pattern);
+                entry.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+                entry.enable();
+                assistFor(thread).add(entry);
+            }
+            return true;
+        } catch (Exception e) {
+            clearStepAssist(thread);
+            return false;
+        }
+    }
+
+    /** The page class of the frame this thread is stopped in, or null. */
+    private String currentGspClass(ThreadReference thread) {
+        try {
+            Location at = thread.frame(0).location();
+            Path file = sources.find(at);
+            if (file != null && GspSource.isGsp(file.toString())) {
+                return GspSource.pageClassNameOf(at.declaringType().name());
+            }
+        } catch (Exception e) {
+            // not stopped anywhere useful; no filter to add
+        }
+        return null;
+    }
+
+    /**
+     * A method of the project's was entered while a step into was waiting.
+     *
+     * <p>Reports nothing for a method with no line table -- the three wrappers
+     * Grails puts around a transactional method are entered before the body is --
+     * and stays armed, so the next entry is still considered.
+     */
+    private Runnable onAssistEntry(MethodEntryEvent event) {
+        ThreadReference thread = event.thread();
+        if (!isAssist(thread, event.request())) {
+            return null;
+        }
+        Location at = event.location();
+        if (at.lineNumber() < 0 || isOutsideProject(at)) {
+            return null; // a wrapper, or a class that only looks like the project's
+        }
+        clearStepAssist(thread);
+        stoppedThread = thread;
+        variables.reset();
+        deduper.forget(thread);
+        return () -> sendStopped("step", thread, new ArrayList<>());
+    }
+
+    private Set<EventRequest> assistFor(ThreadReference thread) {
+        return stepAssist.computeIfAbsent(thread.uniqueID(),
+                key -> ConcurrentHashMap.newKeySet());
+    }
+
+    /**
+     * Whether this request is one armed for this thread's step.
+     *
+     * <p>The thread is enough to find the owner: every request armed here carries
+     * a thread filter, so no other thread can produce an event for one.
+     */
+    private boolean isAssist(ThreadReference thread, EventRequest request) {
+        Set<EventRequest> armed = stepAssist.get(thread.uniqueID());
+        return armed != null && armed.contains(request);
+    }
+
+    private void clearStepAssist(ThreadReference thread) {
+        assistOriginFrames.remove(thread.uniqueID());
+        delete(stepAssist.remove(thread.uniqueID()));
+    }
+
+    /** Everything armed, for a continue: it resumes every thread, not just one. */
+    private void clearAllStepAssist() {
+        assistOriginFrames.clear();
+        for (Long id : new ArrayList<>(stepAssist.keySet())) {
+            delete(stepAssist.remove(id));
+        }
+    }
+
+    private void delete(Set<EventRequest> requests) {
+        if (requests == null || requests.isEmpty()) {
+            return;
+        }
+        EventRequestManager erm = vm.eventRequestManager();
+        for (EventRequest request : requests) {
+            try {
+                erm.deleteEventRequest(request);
+            } catch (RuntimeException e) {
+                // the VM may be gone, or the class unloaded with it
+            }
+        }
     }
 
     private void requestStep(ThreadReference thread, int depth) {
@@ -618,8 +1054,18 @@ public final class DebugSession {
                     // are the same stop, so only the first one is a stop.
                     if (!sawBreakpoint) {
                         sawBreakpoint = true;
-                        announce = orFirst(announce, onBreakpointHit((BreakpointEvent) event));
+                        BreakpointEvent hit = (BreakpointEvent) event;
+                        announce = orFirst(announce,
+                                isAssist(hit.thread(), hit.request())
+                                        ? onAssistArrival(hit.thread())
+                                        : onBreakpointHit(hit));
                     }
+                } else if (event instanceof WatchpointEvent) {
+                    announce = orFirst(announce, onWatchpoint((WatchpointEvent) event));
+                } else if (event instanceof MethodEntryEvent) {
+                    announce = orFirst(announce, onAssistEntry((MethodEntryEvent) event));
+                } else if (event instanceof MethodExitEvent) {
+                    announce = orFirst(announce, onAssistExit((MethodExitEvent) event));
                 } else if (event instanceof ExceptionEvent) {
                     announce = orFirst(announce, onExceptionThrown((ExceptionEvent) event));
                 } else if (event instanceof StepEvent) {
@@ -657,14 +1103,175 @@ public final class DebugSession {
             depth = -1;
         }
         traceLocation("breakpoint", thread, event.location());
-        if (!deduper.shouldReport(thread, event.location(), depth)) {
+        if (!deduper.shouldReport(thread, event.location(), depth, displayLine(event.location()))) {
             // The other half of a line Groovy compiled twice; see StopDeduper.
             return null;
         }
+        BreakpointBinder.Hit hit = binder.onHit((BreakpointRequest) event.request(),
+                condition -> conditionHolds(condition, thread));
+        if (hit.logMessage != null) {
+            // A logpoint. Print where a stop would have been and carry on -- which
+            // is the whole point of one: seeing a value on every pass through a
+            // line without stopping the application on each of them.
+            printLog(hit.logMessage, thread, event.location());
+            return null;
+        }
+        if (!hit.stop) {
+            return null; // the hit count has not reached this hit yet
+        }
         stoppedThread = thread;
         variables.reset();
-        List<Integer> ids = binder.idsFor((BreakpointRequest) event.request());
-        return () -> sendStopped("breakpoint", thread, ids);
+        return () -> sendStopped("breakpoint", thread, hit.ids);
+    }
+
+    /**
+     * A breakpoint's condition, against the frame it just stopped in.
+     *
+     * <p>An unreadable condition stops. The alternative -- treating it as false --
+     * is a breakpoint that never fires, which reads as a broken debugger rather
+     * than as a condition the user should rewrite. The reason is printed so it can
+     * be rewritten.
+     */
+    private boolean conditionHolds(Condition condition, ThreadReference thread) {
+        try {
+            return condition.test(thread.frame(0), GrailsWebScope.find(vm, thread));
+        } catch (PathEvaluator.Unsupported e) {
+            log("breakpoint condition: " + e.getMessage() + " -- stopping anyway");
+            return true;
+        } catch (Exception e) {
+            log("breakpoint condition failed: " + e + " -- stopping anyway");
+            return true;
+        }
+    }
+
+    /**
+     * A logpoint's message, with {@code {expression}} replaced by what it reads.
+     *
+     * <p>The expressions are read the same way a hover is, by walking fields and
+     * keys, so the same limit applies: a call or an operator is refused. Its reason
+     * is printed in place of the value rather than dropped, because a log line that
+     * silently says nothing about {@code {list.size()}} is worse than one that says
+     * why it cannot.
+     */
+    private void printLog(String template, ThreadReference thread, Location location) {
+        StringBuilder out = new StringBuilder(template.length() + 16);
+        StackFrame frame = null;
+        ObjectReference webRequest = null;
+        for (int i = 0; i < template.length(); i++) {
+            char c = template.charAt(i);
+            if (c != '{') {
+                out.append(c);
+                continue;
+            }
+            int close = template.indexOf('}', i);
+            if (close < 0) {
+                out.append(template.substring(i));
+                break;
+            }
+            String expression = template.substring(i + 1, close);
+            i = close;
+            try {
+                if (frame == null) {
+                    frame = thread.frame(0);
+                    webRequest = GrailsWebScope.find(vm, thread);
+                }
+                out.append(variables.plain(
+                        PathEvaluator.evaluate(expression, frame, webRequest)));
+            } catch (PathEvaluator.Unsupported e) {
+                out.append('<').append(e.getMessage()).append('>');
+            } catch (Exception e) {
+                out.append('<').append(e.getClass().getSimpleName()).append('>');
+            }
+        }
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("category", "stdout");
+        body.put("output", out.append('\n').toString());
+        Path file = sources.find(location);
+        if (file != null) {
+            Map<String, Object> source = new LinkedHashMap<>();
+            source.put("name", file.getFileName().toString());
+            source.put("path", file.toString());
+            body.put("source", source);
+            body.put("line", Math.max(location.lineNumber(), 0));
+        }
+        transport.sendEvent("output", body);
+    }
+
+    /** The stand-in step over reached the next line of the frame. */
+    private Runnable onAssistArrival(ThreadReference thread) {
+        clearStepAssist(thread);
+        try {
+            Location at = thread.frame(0).location();
+            if (at.lineNumber() < 0 || isOutsideProject(at)) {
+                // Same rule the ordinary step follows: nowhere worth stopping.
+                if (armLineStepOnCaller(thread)) {
+                    return null;
+                }
+            }
+        } catch (Exception ignored) {
+            // fall through and report where we are
+        }
+        stoppedThread = thread;
+        variables.reset();
+        deduper.forget(thread);
+        return () -> sendStopped("step", thread, new ArrayList<>());
+    }
+
+    /**
+     * The frame is returning, so the step over continues in whoever called it.
+     *
+     * <p>Method exit fires for every method of the class on this thread, so a
+     * deeper call returning arrives here too; the frame count tells them apart.
+     *
+     * <p>It also fires <em>before</em> the frame pops, which is why this reports
+     * nothing. Stopping here would stop on the line just stopped at -- the return
+     * -- a second time. Instead the same trick is set up again on the caller, and
+     * the step lands on the next line executed there.
+     *
+     * <p>The caller may be a wrapper with no line table of its own: Grails puts
+     * three of them between a transactional method and the code that called it. So
+     * it climbs to the nearest frame that has lines and belongs to the project.
+     */
+    private Runnable onAssistExit(MethodExitEvent event) {
+        ThreadReference thread = event.thread();
+        if (!isAssist(thread, event.request())) {
+            return null;
+        }
+        if (frameCountOf(thread) > assistOriginFrames.getOrDefault(thread.uniqueID(), 0)) {
+            return null; // a nested call returning, not this frame
+        }
+        clearStepAssist(thread);
+        if (armLineStepOnCaller(thread)) {
+            return null; // carry on; the caller's lines are armed now
+        }
+        // Nothing above has lines we can use. Fall back to an ordinary step out.
+        requestStep(thread, StepRequest.STEP_OUT);
+        return null;
+    }
+
+    /**
+     * Arms the line breakpoints on the nearest caller worth stopping in.
+     *
+     * @return false if no frame above has both a line table and a source file in
+     *     the project, in which case there is nothing useful to arm
+     */
+    private boolean armLineStepOnCaller(ThreadReference thread) {
+        try {
+            List<StackFrame> frames = thread.frames();
+            for (int i = 1; i < frames.size(); i++) {
+                Location at = frames.get(i).location();
+                if (at.lineNumber() < 0 || isOutsideProject(at)) {
+                    continue;
+                }
+                if (armLineStepAt(thread, at, frames.size() - i)) {
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            return false;
+        }
+        return false;
     }
 
     private Runnable onStepDone(StepEvent event) {
@@ -779,7 +1386,7 @@ public final class DebugSession {
         // Same rule as breakpoints: one stop per line. An exception on its way up
         // passes the same line more than once -- Groovy's dispatch rethrows -- and
         // reporting each pass says nothing the first did not.
-        if (!deduper.shouldReport(thread, where, depth)) {
+        if (!deduper.shouldReport(thread, where, depth, displayLine(where))) {
             return null;
         }
         lastException = event;
@@ -987,12 +1594,17 @@ public final class DebugSession {
         return args instanceof Map ? (Map<String, Object>) args : new LinkedHashMap<>();
     }
 
-    private static long number(Object value, long fallback) {
-        return value instanceof Number ? ((Number) value).longValue() : fallback;
+    /** A string field of a request, or null when it was absent or empty. */
+    private static String text(Object value) {
+        if (!(value instanceof String)) {
+            return null;
+        }
+        String string = (String) value;
+        return string.isEmpty() ? null : string;
     }
 
-    private static String text(Object value) {
-        return value == null ? null : String.valueOf(value);
+    private static long number(Object value, long fallback) {
+        return value instanceof Number ? ((Number) value).longValue() : fallback;
     }
 
     private static List<String> strings(Object value) {

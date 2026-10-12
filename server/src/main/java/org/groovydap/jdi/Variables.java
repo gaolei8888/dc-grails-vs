@@ -2,29 +2,25 @@ package org.groovydap.jdi;
 
 import com.sun.jdi.AbsentInformationException;
 import com.sun.jdi.ArrayReference;
-import com.sun.jdi.ClassNotLoadedException;
+import com.sun.jdi.ArrayType;
 import com.sun.jdi.Field;
 import com.sun.jdi.InconsistentDebugInfoException;
-import com.sun.jdi.InvalidTypeException;
+import com.sun.jdi.IntegerValue;
 import com.sun.jdi.LocalVariable;
 import com.sun.jdi.ObjectReference;
 import com.sun.jdi.StackFrame;
 import com.sun.jdi.StringReference;
 import com.sun.jdi.ThreadReference;
+import com.sun.jdi.Type;
 import com.sun.jdi.Value;
-import com.sun.jdi.VirtualMachine;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Supplier;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Renders JDI values for the variables pane, and hands out the integer handles
@@ -48,35 +44,32 @@ public final class Variables {
     private abstract static class Node {
         abstract List<Map<String, Object>> children();
 
-        /** The place a child called {@code name} is stored, if it can be changed at all. */
-        Slot slot(String name) throws Exception {
-            throw new EvaluationException("'" + name + "' cannot be changed here "
-                    + "(map entries and the Grails scope are read-only)");
-        }
-    }
-
-    /** Where one variable lives in the target: how to read it and how to write it. */
-    private abstract static class Slot {
-        final String name;
-        final String type;
-        final VirtualMachine vm;
-
-        Slot(String name, String type, VirtualMachine vm) {
-            this.name = name;
-            this.type = type;
-            this.vm = vm;
+        /**
+         * Registers this name as a watchable field and returns its token, or null.
+         *
+         * <p>Only a field can be watched: the JVM can report a write to one and
+         * has nothing to say about a local, an array element or a map entry. The
+         * pane offers "break on value change" only where this answers.
+         */
+        String watchable(String name, DataPoints points) {
+            return null;
         }
 
-        abstract Value read() throws Exception;
-
-        abstract void store(Value value) throws Exception;
+        /**
+         * Writes one of this node's slots.
+         *
+         * <p>Refusing is the default: a change that quietly went nowhere would be
+         * worse than one that was never offered.
+         */
+        Map<String, Object> set(String name, String text, ThreadReference on)
+                throws PathEvaluator.Unsupported {
+            throw new PathEvaluator.Unsupported(name + " cannot be changed from here");
+        }
     }
 
     private final class FrameLocals extends Node {
         final ThreadReference thread;
         final int frameIndex;
-        /** Locals the last children() call could not read yet; see below. */
-        final Set<String> unreadable = new HashSet<>();
 
         FrameLocals(ThreadReference thread, int frameIndex) {
             this.thread = thread;
@@ -84,33 +77,8 @@ public final class Variables {
         }
 
         @Override
-        Slot slot(String name) throws Exception {
-            if (name.equals("this") || isSynthetic(name)) {
-                throw new EvaluationException("'" + name + "' cannot be changed");
-            }
-            for (LocalVariable local : thread.frame(frameIndex).visibleVariables()) {
-                if (local.name().equals(name)) {
-                    // A fresh StackFrame for every call: one fetched before the VM
-                    // last resumed is invalid, and this way the read after a write
-                    // is a real read too.
-                    return new Slot(name, local.typeName(), thread.virtualMachine()) {
-                        Value read() throws Exception {
-                            return thread.frame(frameIndex).getValue(local);
-                        }
-
-                        void store(Value value) throws Exception {
-                            thread.frame(frameIndex).setValue(local, value);
-                        }
-                    };
-                }
-            }
-            throw new EvaluationException("'" + name + "' is not a variable of this frame");
-        }
-
-        @Override
         List<Map<String, Object>> children() {
             List<Map<String, Object>> out = new ArrayList<>();
-            unreadable.clear();
             try {
                 StackFrame frame = thread.frame(frameIndex);
                 ObjectReference self = frame.thisObject();
@@ -135,14 +103,54 @@ public final class Variables {
                         // is at bci 9, so on entry to the closure the slot is
                         // "live" yet empty and the VM refuses to read it. The
                         // parameter in its old slot is out of range for JDI too,
-                        // so there is nothing to show until the box exists.
-                        unreadable.add(local.name());
+                        // so there is nothing to show until the box exists. One
+                        // such variable must not blank the whole panel.
                     }
                 }
             } catch (Exception e) {
                 out.add(error(e));
             }
             return out;
+        }
+
+        @Override
+        Map<String, Object> set(String name, String text, ThreadReference on)
+                throws PathEvaluator.Unsupported {
+            try {
+                if (name.equals("this")) {
+                    throw new PathEvaluator.Unsupported("this cannot be reassigned");
+                }
+                StackFrame frame = thread.frame(frameIndex);
+                LocalVariable local = frame.visibleVariableByName(name);
+                if (local == null) {
+                    throw new PathEvaluator.Unsupported("no local named " + name + " here");
+                }
+                // A local a closure captured lives in a groovy.lang.Reference. The
+                // slot holds the box, so the value goes inside it: assigning the
+                // slot would replace the box and leave the closure holding the old
+                // one, which is a change the program would not see.
+                Value current = frame.getValue(local);
+                if (current instanceof ObjectReference
+                        && Values.unwrapReference(current) != current) {
+                    return setField((ObjectReference) current, "value", text, on);
+                }
+                Value value = ValueFactory.of(text, local.type(), on);
+                // Making a boxed number calls valueOf in the target, and an
+                // invocation resumes the thread to run it -- which invalidates
+                // every StackFrame taken before it. The frame has to be fetched
+                // again; measured as "Thread has been resumed" on setting a local
+                // typed java.lang.Integer, which in Groovy is most of them. The
+                // LocalVariable survives: it belongs to the method, not the frame.
+                thread.frame(frameIndex).setValue(local, value);
+                return describe(name, value, local.typeName());
+            } catch (PathEvaluator.Unsupported e) {
+                throw e;
+            } catch (InconsistentDebugInfoException e) {
+                throw new PathEvaluator.Unsupported("'" + name + "' is not writable at this point "
+                        + "(it is initialised later in this method)");
+            } catch (Exception e) {
+                throw new PathEvaluator.Unsupported("could not set " + name + ": " + e);
+            }
         }
     }
 
@@ -153,55 +161,25 @@ public final class Variables {
             this.object = object;
         }
 
-        /**
-         * Instance fields only, and one entry per name. allFields() walks the whole
-         * hierarchy, so it also returns the class's constants -- expanding an
-         * Integer listed MIN_VALUE, MAX_VALUE, TYPE, digits, SIZE, BYTES and
-         * serialVersionUID twice, once for Integer and once for Number -- none of
-         * which says anything about this object.
-         */
-        private List<Field> fields() {
-            List<Field> fields = new ArrayList<>();
-            Set<String> seen = new HashSet<>();
-            for (Field field : object.referenceType().allFields()) {
-                if (!field.isStatic() && !isSynthetic(field.name()) && seen.add(field.name())) {
-                    fields.add(field);
-                }
-            }
-            return fields;
-        }
-
-        @Override
-        Slot slot(String name) {
-            String owner = object.referenceType().name();
-            for (Field field : fields()) {
-                if (!field.name().equals(name)) {
-                    continue;
-                }
-                // Never reachable from the pane, but these are the shared instances
-                // (the Integer cache, interned strings) whose mutation would reach
-                // the whole JVM, so say no here too.
-                if (field.isFinal() || BOXES.contains(owner) || owner.equals("java.lang.String")) {
-                    throw new EvaluationException("'" + name + "' is final");
-                }
-                return new Slot(name, field.typeName(), object.virtualMachine()) {
-                    Value read() {
-                        return object.getValue(field);
-                    }
-
-                    void store(Value value) throws Exception {
-                        object.setValue(field, value);
-                    }
-                };
-            }
-            throw new EvaluationException("'" + name + "' is not a field the debugger shows");
-        }
-
         @Override
         List<Map<String, Object>> children() {
             List<Map<String, Object>> out = new ArrayList<>();
             try {
-                List<Field> fields = fields();
+                // Instance fields only, and one entry per name. allFields() walks
+                // the whole hierarchy, so it also returns the class's constants --
+                // expanding an Integer listed MIN_VALUE, MAX_VALUE, TYPE, digits,
+                // SIZE, BYTES and serialVersionUID twice, once for Integer and once
+                // for Number -- none of which says anything about this object.
+                List<Field> fields = new ArrayList<>();
+                Set<String> seen = new HashSet<>();
+                for (Field field : object.referenceType().allFields()) {
+                    if (field.isStatic() || isSynthetic(field.name())) {
+                        continue;
+                    }
+                    if (seen.add(field.name())) {
+                        fields.add(field);
+                    }
+                }
                 Map<Field, Value> values = object.getValues(fields);
                 for (Field field : fields) {
                     out.add(describe(field.name(), values.get(field), field.typeName()));
@@ -211,6 +189,17 @@ public final class Variables {
             }
             return out;
         }
+
+        @Override
+        Map<String, Object> set(String name, String text, ThreadReference on)
+                throws PathEvaluator.Unsupported {
+            return setField(object, name, text, on);
+        }
+
+        @Override
+        String watchable(String name, DataPoints points) {
+            return registerWatch(object, name, points);
+        }
     }
 
     private final class ArrayElements extends Node {
@@ -218,25 +207,6 @@ public final class Variables {
 
         ArrayElements(ArrayReference array) {
             this.array = array;
-        }
-
-        @Override
-        Slot slot(String name) {
-            Matcher m = ELEMENT.matcher(name);
-            if (!m.matches() || Integer.parseInt(m.group(1)) >= Math.min(array.length(), MAX_ARRAY_ELEMENTS)) {
-                throw new EvaluationException("'" + name + "' is not an element the debugger shows");
-            }
-            int index = Integer.parseInt(m.group(1));
-            String arrayType = array.referenceType().name();
-            return new Slot(name, arrayType.substring(0, arrayType.length() - 2), array.virtualMachine()) {
-                Value read() {
-                    return array.getValue(index);
-                }
-
-                void store(Value value) throws Exception {
-                    array.setValue(index, value);
-                }
-            };
         }
 
         @Override
@@ -255,6 +225,26 @@ public final class Variables {
                 out.add(error(e));
             }
             return out;
+        }
+
+        @Override
+        Map<String, Object> set(String name, String text, ThreadReference on)
+                throws PathEvaluator.Unsupported {
+            String index = name.startsWith("[") && name.endsWith("]")
+                    ? name.substring(1, name.length() - 1) : name;
+            try {
+                Type component = array.referenceType() instanceof ArrayType
+                        ? ((ArrayType) array.referenceType()).componentType() : null;
+                Value value = ValueFactory.of(text, component, on);
+                array.setValue(Integer.parseInt(index.trim()), value);
+                return describe(name, value, null);
+            } catch (NumberFormatException e) {
+                throw new PathEvaluator.Unsupported(name + " is not an index");
+            } catch (PathEvaluator.Unsupported e) {
+                throw e;
+            } catch (Exception e) {
+                throw new PathEvaluator.Unsupported("could not set " + name + ": " + e);
+            }
         }
     }
 
@@ -290,6 +280,17 @@ public final class Variables {
                 out.add(error(e));
             }
             return out;
+        }
+
+        @Override
+        Map<String, Object> set(String name, String text, ThreadReference on)
+                throws PathEvaluator.Unsupported {
+            return setField(object, name, text, on);
+        }
+
+        @Override
+        String watchable(String name, DataPoints points) {
+            return registerWatch(object, name, points);
         }
     }
 
@@ -351,6 +352,51 @@ public final class Variables {
             return key instanceof StringReference
                     ? ((StringReference) key).value() : String.valueOf(render(key));
         }
+
+        /**
+         * Changes what a key maps to, by writing the entry node's value field.
+         *
+         * <p>The same write put would do for a key that is already there: no
+         * rehashing, no resize, no new entry, so it needs no call into the
+         * application. A key that is not there cannot be added this way and says
+         * so, rather than appearing to work.
+         */
+        @Override
+        Map<String, Object> set(String name, String text, ThreadReference on)
+                throws PathEvaluator.Unsupported {
+            try {
+                ArrayReference table = tableOf(map);
+                if (table == null) {
+                    throw new PathEvaluator.Unsupported("this is not a map any more");
+                }
+                for (Value slot : table.getValues()) {
+                    ObjectReference node = slot instanceof ObjectReference
+                            ? (ObjectReference) slot : null;
+                    int guard = 0;
+                    while (node != null && guard++ < 64) {
+                        Field keyField = node.referenceType().fieldByName("key");
+                        Field valueField = valueFieldOf(node);
+                        if (keyField == null || valueField == null) {
+                            break;
+                        }
+                        if (label(node.getValue(keyField)).equals(name)) {
+                            Value value = ValueFactory.of(text, valueField.type(), on);
+                            node.setValue(valueField, value);
+                            return describe(name, value, null);
+                        }
+                        Field nextField = node.referenceType().fieldByName("next");
+                        Value next = nextField == null ? null : node.getValue(nextField);
+                        node = next instanceof ObjectReference ? (ObjectReference) next : null;
+                    }
+                }
+                throw new PathEvaluator.Unsupported("no entry " + name
+                        + "; a key that is not there cannot be added by setting it");
+            } catch (PathEvaluator.Unsupported e) {
+                throw e;
+            } catch (Exception e) {
+                throw new PathEvaluator.Unsupported("could not set " + name + ": " + e);
+            }
+        }
     }
 
     private static final int MAX_MAP_ENTRIES = 200;
@@ -394,17 +440,14 @@ public final class Variables {
     }
 
     private static final int MAX_ARRAY_ELEMENTS = 200;
-    private static final String REFERENCE_CLASS = "groovy.lang.Reference";
-    private static final Pattern ELEMENT = Pattern.compile("\\[(\\d{1,9})\\]");
+    /** How much of a collection goes into a log line, and how deep. */
+    private static final int MAX_INLINE_ELEMENTS = 8;
+    private static final int MAX_INLINE_DEPTH = 2;
 
     /** package_with_underscores_TraitName__field, how Groovy names a trait field. */
     private static final java.util.regex.Pattern TRAIT_FIELD =
             java.util.regex.Pattern.compile("[a-z][A-Za-z0-9_]*_[A-Z][A-Za-z0-9]*__.+");
 
-    private static final Set<String> BOXES = new HashSet<>(Arrays.asList(
-            "java.lang.Integer", "java.lang.Long", "java.lang.Short", "java.lang.Byte",
-            "java.lang.Double", "java.lang.Float", "java.lang.Boolean",
-            "java.lang.Character"));
 
     private final Map<Integer, Node> handles = new LinkedHashMap<>();
     private final AtomicInteger nextHandle = new AtomicInteger(1);
@@ -418,235 +461,182 @@ public final class Variables {
         return register(new FrameLocals(thread, frameIndex));
     }
 
+    /**
+     * One value, described the way an evaluate response wants it.
+     *
+     * <p>Same rendering as the pane, so a hover and the variables view never
+     * disagree about what something is.
+     */
+    public synchronized Map<String, Object> describeResult(Value value) {
+        Map<String, Object> described = describe("", value, null);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("result", described.get("value"));
+        body.put("type", described.get("type"));
+        body.put("variablesReference", described.get("variablesReference"));
+        return body;
+    }
+
+    /**
+     * One value as a line of text, for a logpoint.
+     *
+     * <p>Same rendering as the pane except for strings, which lose their quotes:
+     * {@code "saving Widget 3"} is a log line, {@code saving "Widget" 3} is a
+     * transcription of the debugger's own notation.
+     */
+    public synchronized String plain(Value value) {
+        return plain(value, 0);
+    }
+
+    private String plain(Value value, int depth) {
+        Value effective = unwrapReference(value);
+        if (effective instanceof StringReference) {
+            return ((StringReference) effective).value();
+        }
+        String collection = depth < MAX_INLINE_DEPTH ? plainCollection(effective, depth) : null;
+        return collection != null ? collection : render(effective);
+    }
+
+    /**
+     * A list or a map written out, for a log line.
+     *
+     * <p>The pane can afford to say {@code ArrayList (id=14513)} and let the user
+     * expand it; a line of text cannot -- an object id in a log is nothing at all.
+     * So the contents go in, walked out of the same fields the pane walks and
+     * capped, because a log line is not a place to print a thousand elements.
+     */
+    private String plainCollection(Value value, int depth) {
+        if (!(value instanceof ObjectReference)) {
+            return null;
+        }
+        ObjectReference object = (ObjectReference) value;
+        List<String> parts = new ArrayList<>();
+        boolean more = false;
+
+        ObjectReference asMap = unwrapMap(object);
+        if (asMap != null) {
+            ArrayReference table = tableOf(asMap);
+            for (Value slot : table.getValues()) {
+                ObjectReference node = slot instanceof ObjectReference
+                        ? (ObjectReference) slot : null;
+                int guard = 0;
+                while (node != null && guard++ < 64) {
+                    Field keyField = node.referenceType().fieldByName("key");
+                    Field valueField = valueFieldOf(node);
+                    if (keyField == null || valueField == null) {
+                        break;
+                    }
+                    if (parts.size() >= MAX_INLINE_ELEMENTS) {
+                        more = true;
+                        break;
+                    }
+                    parts.add(plain(node.getValue(keyField), depth + 1) + ":"
+                            + plain(node.getValue(valueField), depth + 1));
+                    Field nextField = node.referenceType().fieldByName("next");
+                    Value next = nextField == null ? null : node.getValue(nextField);
+                    node = next instanceof ObjectReference ? (ObjectReference) next : null;
+                }
+            }
+            return "[" + String.join(", ", parts) + (more ? ", ..." : "") + "]";
+        }
+
+        Field data = object.referenceType().fieldByName("elementData");
+        Field sizeField = object.referenceType().fieldByName("size");
+        if (data == null || sizeField == null) {
+            return null;
+        }
+        Value array = object.getValue(data);
+        Value count = object.getValue(sizeField);
+        if (!(array instanceof ArrayReference) || !(count instanceof IntegerValue)) {
+            return null;
+        }
+        int size = Math.min(((IntegerValue) count).value(), ((ArrayReference) array).length());
+        int shown = Math.min(size, MAX_INLINE_ELEMENTS);
+        for (int i = 0; i < shown; i++) {
+            parts.add(plain(((ArrayReference) array).getValue(i), depth + 1));
+        }
+        return "[" + String.join(", ", parts)
+                + (shown < size ? ", ... " + (size - shown) + " more" : "") + "]";
+    }
+
     /** A handle over just these fields of this object, in this order. */
     public synchronized int curatedHandle(ObjectReference object, List<String> fieldNames) {
         return register(new CuratedFields(object, fieldNames));
     }
 
+    /**
+     * Writes a slot of whatever this handle refers to.
+     *
+     * @throws PathEvaluator.Unsupported with the reason, which the client shows
+     */
+    public synchronized Map<String, Object> set(int handle, String name, String text,
+                                               ThreadReference on)
+            throws PathEvaluator.Unsupported {
+        Node node = handles.get(handle);
+        if (node == null) {
+            throw new PathEvaluator.Unsupported(
+                    "that variable belongs to an earlier stop and is gone");
+        }
+        if (on == null) {
+            throw new PathEvaluator.Unsupported("nothing is stopped");
+        }
+        return node.set(name, text, on);
+    }
+
+    /** The token for watching this name of this handle, or null if it is not a field. */
+    public synchronized String watchable(int handle, String name, DataPoints points) {
+        Node node = handles.get(handle);
+        return node == null ? null : node.watchable(name, points);
+    }
+
+    /**
+     * Registers a field of an object as watchable.
+     *
+     * <p>A synthetic field is refused for the same reason it is not shown: it is
+     * the compiler's, not the programmer's. A final one is refused because it is
+     * never written again, and a breakpoint that cannot fire is worse than one
+     * that was not offered.
+     */
+    private String registerWatch(ObjectReference object, String name, DataPoints points) {
+        if (isSynthetic(name)) {
+            return null;
+        }
+        Field field = object.referenceType().fieldByName(name);
+        if (field == null || field.isFinal()) {
+            return null;
+        }
+        return points.register(field, field.isStatic() ? null : object,
+                object.referenceType().name() + "." + name);
+    }
+
+    /** One field of one object, with a Reference unwrapped on the way in. */
+    private Map<String, Object> setField(ObjectReference object, String name, String text,
+                                         ThreadReference on)
+            throws PathEvaluator.Unsupported {
+        Field field = object.referenceType().fieldByName(name);
+        if (field == null) {
+            throw new PathEvaluator.Unsupported(
+                    object.referenceType().name() + " has no field " + name);
+        }
+        try {
+            Value current = object.getValue(field);
+            if (current instanceof ObjectReference
+                    && Values.unwrapReference(current) != current) {
+                return setField((ObjectReference) current, "value", text, on);
+            }
+            Value value = ValueFactory.of(text, field.type(), on);
+            object.setValue(field, value);
+            return describe(name, value, field.typeName());
+        } catch (PathEvaluator.Unsupported e) {
+            throw e;
+        } catch (Exception e) {
+            // A final field is the usual one: the JVM refuses the write.
+            throw new PathEvaluator.Unsupported("could not set " + name + ": " + e);
+        }
+    }
+
     public synchronized List<Map<String, Object>> children(int handle) {
         Node node = handles.get(handle);
         return node == null ? new ArrayList<>() : node.children();
-    }
-
-    /**
-     * Resolves a variable path such as {@code order.items[0].name} against a frame,
-     * by walking the same tree the variables pane shows.
-     *
-     * <p>Nothing runs in the target: every hop is a field read through
-     * {@link #children}, so the naming, the {@code groovy.lang.Reference} unwrap
-     * and the 200-element caps are exactly the pane's, and a path the pane can
-     * display is a path this can resolve. A call would have to resume the VM.
-     *
-     * <p>The first name is looked up in the frame's locals, then in the fields of
-     * {@code this}, then in the Grails request scope (params, request, ...).
-     *
-     * @param webScope only asked for when the name is found nowhere else
-     * @return the value as a variables entry: name, value, type, variablesReference
-     * @throws EvaluationException with the reason, for anything that cannot be shown
-     */
-    public synchronized Map<String, Object> evaluate(ThreadReference thread, int frameIndex,
-            Supplier<ObjectReference> webScope, String expression) {
-        List<PathExpression.Step> steps = PathExpression.parse(expression);
-        Map<String, Object> current = lookupFirst(thread, frameIndex, webScope, steps.get(0).text).variable;
-        for (int i = 1; i < steps.size(); i++) {
-            current = step(current, steps, i);
-        }
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("result", current.get("value"));
-        result.put("type", current.get("type"));
-        result.put("variablesReference", current.get("variablesReference"));
-        return result;
-    }
-
-    /** The variable a path starts at, and the node holding it. */
-    private static final class Hit {
-        final Map<String, Object> variable;
-        final Node container;
-
-        Hit(Map<String, Object> variable, Node container) {
-            this.variable = variable;
-            this.container = container;
-        }
-    }
-
-    private Hit lookupFirst(ThreadReference thread, int frameIndex,
-            Supplier<ObjectReference> webScope, String first) {
-        FrameLocals frameLocals = new FrameLocals(thread, frameIndex);
-        List<Map<String, Object>> locals = frameLocals.children();
-        Map<String, Object> found = named(locals, first);
-        Node container = frameLocals;
-        if (found == null && frameLocals.unreadable.contains(first)) {
-            throw new EvaluationException("'" + first + "' is not readable at this point "
-                    + "(it is initialised later in this method)");
-        }
-        Map<String, Object> self = named(locals, "this");
-        if (found == null && self != null) {
-            container = handles.get(refOf(self));
-            found = named(children(refOf(self)), first);
-        }
-        if (found == null && webScope != null
-                && GrailsWebScope.interestingFields().contains(first)) {
-            ObjectReference request = webScope.get();
-            if (request != null) {
-                int scope = curatedHandle(request, GrailsWebScope.interestingFields());
-                container = handles.get(scope);
-                found = named(children(scope), first);
-            }
-        }
-        if (found == null) {
-            Map<String, Object> failure = named(locals, "<error>");
-            throw new EvaluationException(failure != null
-                    ? "cannot read this frame: " + failure.get("value")
-                    : "'" + first + "' is not defined in this frame");
-        }
-        return new Hit(found, container);
-    }
-
-    /**
-     * DAP setVariable: change one child of a variables handle.
-     *
-     * @return what the pane shows for it now: value, type, variablesReference
-     * @throws EvaluationException with the reason, for anything that cannot be changed
-     */
-    public synchronized Map<String, Object> setVariable(int handle, String name, String text) {
-        Node node = handles.get(handle);
-        if (node == null) {
-            throw new EvaluationException("no such variable list "
-                    + "(the program has resumed since it was shown)");
-        }
-        return change(node, name, text);
-    }
-
-    /**
-     * DAP setExpression: change what a variable path names, found by the same walk
-     * as {@link #evaluate}.
-     */
-    public synchronized Map<String, Object> setExpression(ThreadReference thread, int frameIndex,
-            Supplier<ObjectReference> webScope, String expression, String text) {
-        List<PathExpression.Step> steps = PathExpression.parse(expression);
-        Hit hit = lookupFirst(thread, frameIndex, webScope, steps.get(0).text);
-        Map<String, Object> current = hit.variable;
-        Node container = hit.container;
-        for (int i = 1; i < steps.size(); i++) {
-            Map<String, Object> next = step(current, steps, i);
-            container = handles.get(refOf(current));
-            current = next;
-        }
-        return change(container, (String) current.get("name"), text);
-    }
-
-    /**
-     * The one write routine: parse the literal, store it, read it back.
-     *
-     * <p>Nothing here runs code in the target. A String is made with mirrorOf, a
-     * primitive is stored as itself, and anything that would need a box or a
-     * constructor is refused by {@link ValueParser} before JDI is asked.
-     */
-    private Map<String, Object> change(Node container, String name, String text) {
-        try {
-            Slot slot = container.slot(name);
-            Value current = slot.read();
-            if (isCaptured(current)) {
-                throw new EvaluationException("'" + name + "' is captured by a closure ("
-                        + REFERENCE_CLASS + "); " + ValueParser.NEEDS_OBJECT);
-            }
-            String held = current == null ? slot.type : current.type().name();
-            try {
-                slot.store(ValueParser.parse(slot.vm, name, slot.type, held, text));
-            } catch (InvalidTypeException e) {
-                throw new EvaluationException("cannot assign " + text + " to '" + name
-                        + "' (a " + slot.type + ")");
-            } catch (ClassNotLoadedException e) {
-                throw new EvaluationException("the type of '" + name + "' (" + e.className()
-                        + ") is not loaded in the application yet");
-            }
-            Map<String, Object> shown = describe(name, slot.read(), slot.type);
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("value", shown.get("value"));
-            result.put("type", shown.get("type"));
-            result.put("variablesReference", shown.get("variablesReference"));
-            return result;
-        } catch (InconsistentDebugInfoException e) {
-            throw new EvaluationException("'" + name + "' is not writable at this point "
-                    + "(it is initialised later in this method)");
-        } catch (EvaluationException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new EvaluationException("cannot change '" + name + "': "
-                    + e.getClass().getSimpleName()
-                    + (e.getMessage() == null ? "" : ": " + e.getMessage()));
-        }
-    }
-
-    private static boolean isCaptured(Value value) {
-        return value instanceof ObjectReference
-                && REFERENCE_CLASS.equals(((ObjectReference) value).referenceType().name());
-    }
-
-    /** One hop of {@link #evaluate}: the member or element {@code steps[i]} of {@code from}. */
-    private Map<String, Object> step(Map<String, Object> from, List<PathExpression.Step> steps, int i) {
-        PathExpression.Step wanted = steps.get(i);
-        String parent = display(steps, i);
-        int handle = refOf(from);
-        if (handle == 0) {
-            throw new EvaluationException("cannot read '" + wanted + "' of '" + parent + "': "
-                    + ("null".equals(from.get("value")) ? "it is null"
-                    : "a " + from.get("type") + " has no members to show"));
-        }
-        List<Map<String, Object>> kids = children(handle);
-        Map<String, Object> found;
-        if (wanted.isMember()) {
-            found = named(kids, wanted.text);
-        } else {
-            found = named(kids, "[" + wanted.index + "]");         // an array
-            if (found == null) {
-                found = listElement(kids, wanted.index);           // an ArrayList
-            }
-            if (found == null) {
-                found = named(kids, String.valueOf(wanted.index)); // a map with an int key
-            }
-        }
-        if (found == null) {
-            throw new EvaluationException("'" + parent + "' has no " + (wanted.isMember()
-                    ? "member '" + wanted.text + "'" : "element " + wanted)
-                    + (named(kids, "...") != null
-                    ? " among the entries the debugger lists (it shows at most "
-                            + MAX_ARRAY_ELEMENTS + ")" : ""));
-        }
-        return found;
-    }
-
-    /** {@code list[n]} for an ArrayList, read out of its backing array like the pane would. */
-    private Map<String, Object> listElement(List<Map<String, Object>> fields, int index) {
-        Map<String, Object> backing = named(fields, "elementData");
-        Map<String, Object> size = named(fields, "size");
-        if (backing == null || size == null || refOf(backing) == 0
-                || !String.valueOf(size.get("value")).matches("\\d+")
-                || index >= Integer.parseInt(String.valueOf(size.get("value")))) {
-            return null;
-        }
-        return named(children(refOf(backing)), "[" + index + "]");
-    }
-
-    private static String display(List<PathExpression.Step> steps, int upTo) {
-        StringBuilder sb = new StringBuilder(steps.get(0).text);
-        for (int i = 1; i < upTo; i++) {
-            sb.append(steps.get(i));
-        }
-        return sb.toString();
-    }
-
-    private static Map<String, Object> named(List<Map<String, Object>> variables, String name) {
-        for (Map<String, Object> variable : variables) {
-            if (name.equals(variable.get("name"))) {
-                return variable;
-            }
-        }
-        return null;
-    }
-
-    private static int refOf(Map<String, Object> variable) {
-        return ((Number) variable.get("variablesReference")).intValue();
     }
 
     private int register(Node node) {
@@ -706,15 +696,7 @@ public final class Variables {
      * talks about.
      */
     private Value unwrapReference(Value value) {
-        if (!(value instanceof ObjectReference)) {
-            return value;
-        }
-        ObjectReference object = (ObjectReference) value;
-        if (!REFERENCE_CLASS.equals(object.referenceType().name())) {
-            return value;
-        }
-        Field field = object.referenceType().fieldByName("value");
-        return field == null ? value : object.getValue(field);
+        return Values.unwrapReference(value);
     }
 
     /**
@@ -728,18 +710,8 @@ public final class Variables {
      * no code in the target VM.
      */
     private String renderBoxed(ObjectReference object, String type) {
-        if (!BOXES.contains(type)) {
-            return null;
-        }
-        Field field = object.referenceType().fieldByName("value");
-        if (field == null) {
-            return null;
-        }
-        Value inner = object.getValue(field);
-        if (inner instanceof ArrayReference) {
-            return null; // BigInteger keeps an int[]; not worth decoding
-        }
-        return String.valueOf(inner);
+        Value inner = Values.boxedValue(object);
+        return inner == null ? null : String.valueOf(inner);
     }
 
     private int handleFor(Value value) {
@@ -751,7 +723,7 @@ public final class Variables {
         }
         if (value instanceof ObjectReference) {
             ObjectReference object = (ObjectReference) value;
-            if (BOXES.contains(object.referenceType().name())) {
+            if (Values.isBox(object.referenceType().name())) {
                 return 0; // already shown as its value; there is nothing inside
             }
             ObjectReference asMap = unwrapMap(object);

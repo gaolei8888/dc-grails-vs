@@ -1,0 +1,68 @@
+{
+  "name": "Groovy Server Pages",
+  "scopeName": "text.html.gsp",
+  "patterns": [{ "include": "#gsp" }, { "include": "text.html.basic" }],
+  "injections": {
+    "L:text.html.gsp - comment - meta.embedded.groovy - source.groovy": {
+      "patterns": [{ "include": "#gsp" }]
+    }
+  },
+  "repository": {
+    "gsp": {
+      "patterns": [
+        { "include": "#comment" }, { "include": "#expression" },
+        { "include": "#directive" }, { "include": "#scriptlet" }, { "include": "#tag" }
+      ]
+    },
+    "comment": {
+      "name": "comment.block.gsp", "begin": "%\\{--", "end": "--\\}%",
+      "captures": { "0": { "name": "punctuation.definition.comment.gsp" } }
+    },
+    "expression": {
+      "name": "meta.embedded.groovy", "contentName": "source.groovy",
+      "begin": "(?<!\\\\)\\$\\{", "end": "\\}",
+      "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.gsp" } },
+      "endCaptures": { "0": { "name": "punctuation.section.embedded.end.gsp" } },
+      "patterns": [{ "include": "source.groovy" }]
+    },
+    "scriptlet": {
+      "name": "meta.embedded.groovy", "contentName": "source.groovy",
+      "begin": "<%[=!]?(?!@)", "end": "%>",
+      "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.gsp" } },
+      "endCaptures": { "0": { "name": "punctuation.section.embedded.end.gsp" } },
+      "patterns": [{ "include": "source.groovy" }]
+    },
+    "directive": {
+      "name": "meta.tag.directive.gsp", "begin": "(<%@)\\s*([\\w-]+)", "end": "%>",
+      "beginCaptures": {
+        "1": { "name": "punctuation.section.embedded.begin.gsp" },
+        "2": { "name": "keyword.control.directive.gsp" }
+      },
+      "endCaptures": { "0": { "name": "punctuation.section.embedded.end.gsp" } },
+      "patterns": [{ "include": "#attributes" }]
+    },
+    "tag": {
+      "name": "meta.tag.gsp",
+      "begin": "(</?)([A-Za-z_][\\w.-]*)(:)([A-Za-z_][\\w.-]*)(?=\\s|/?>)", "end": "/?>",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.gsp" },
+        "2": { "name": "entity.name.tag.namespace.gsp" },
+        "3": { "name": "punctuation.separator.namespace.gsp" },
+        "4": { "name": "entity.name.tag.gsp" }
+      },
+      "endCaptures": { "0": { "name": "punctuation.definition.tag.end.gsp" } },
+      "patterns": [{ "include": "#attributes" }]
+    },
+    "attributes": {
+      "patterns": [
+        { "include": "#expression" },
+        { "match": "[A-Za-z_:][\\w.:-]*", "name": "entity.other.attribute-name.gsp" },
+        { "match": "=", "name": "punctuation.separator.key-value.gsp" },
+        { "name": "string.quoted.double.gsp", "begin": "\"", "end": "\"",
+          "patterns": [{ "include": "#expression" }, { "include": "text.html.basic#entities" }] },
+        { "name": "string.quoted.single.gsp", "begin": "'", "end": "'",
+          "patterns": [{ "include": "#expression" }, { "include": "text.html.basic#entities" }] }
+      ]
+    }
+  }
+}
