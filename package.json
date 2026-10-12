@@ -64,11 +64,49 @@
     "debuggers": [
       {
         "type": "groovy-dap",
-        "label": "Groovy (attach)",
+        "label": "Grails (Groovy debugger)",
         "languages": [
           "groovy"
         ],
         "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "projectDir": {
+                "type": "string",
+                "description": "Grails project root to run bootRun in.",
+                "default": "${workspaceFolder}"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Extra arguments for bootRun, after those from grails.run.args.",
+                "default": []
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Extra environment variables for the app, merged over grails.run.env.",
+                "default": {}
+              },
+              "startTimeout": {
+                "type": "number",
+                "description": "How long to wait for the JVM to open its debug port, in seconds (cold start plus a full compile).",
+                "default": 300
+              },
+              "sourcePaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Roots to resolve stack frames against. Defaults to the Grails artefact directories of projectDir.",
+                "default": []
+              }
+            }
+          },
           "attach": {
             "required": [
               "port"
@@ -103,6 +141,11 @@
         "initialConfigurations": [
           {
             "type": "groovy-dap",
+            "request": "launch",
+            "name": "Grails: Debug App"
+          },
+          {
+            "type": "groovy-dap",
             "request": "attach",
             "name": "Attach to Grails (Groovy)",
             "hostName": "localhost",
@@ -110,6 +153,15 @@
           }
         ],
         "configurationSnippets": [
+          {
+            "label": "Grails: Debug App",
+            "description": "Starts bootRun --debug-jvm and attaches. Binds breakpoints in .groovy files, closures included.",
+            "body": {
+              "type": "groovy-dap",
+              "request": "launch",
+              "name": "Grails: Debug App"
+            }
+          },
           {
             "label": "Groovy: attach to a running JVM",
             "description": "Binds breakpoints in .groovy files, closures included.",

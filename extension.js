@@ -8,6 +8,14 @@ const os = require('os');
 let gradleRunProcess = null;
 let gradleDebugProcess = null;
 
+// The JDWP port gradleDebugProcess announced, once it has. Lets a second request to
+// debug (F5 with a debug process already up) attach to it instead of starting another.
+let gradleDebugPort = null;
+// Set only when a launch configuration started gradleDebugProcess: the session that
+// attached on this port owns the process, so ending it stops the app. A process
+// started from the status bar is never stopped by a session ending.
+let launchedPort = null;
+
 // The JVM prints this once the JDWP agent is actually listening. Waiting for it
 // is the only reliable attach trigger -- a fixed delay races Gradle's configure
 // and compile phases, which routinely take far longer than any delay you'd pick.
@@ -785,20 +793,220 @@ function makeAdapterFactory(context) {
   };
 }
 
+/** The attach session a debug session is made of, whoever started the JVM. */
+function attachConfiguration(root, port, type, name, sourcePaths) {
+  return {
+    name,
+    type,
+    request: 'attach',
+    hostName: 'localhost',
+    port,
+    sourcePaths: sourcePaths || defaultSourcePaths(root)
+  };
+}
+
+/**
+ * Starts `bootRun --debug-jvm` (or the configured equivalent) and waits for the JVM
+ * to say its debug port is open. Everything Debug App and a launch configuration
+ * share: the build, its output channel, the ANSI stripping, the "first dt_socket
+ * line only" rule and the give-up timer. Attaching is the caller's business.
+ *
+ * Resolves to { port } once the JVM is listening, or { failure } with 'refused'
+ * (said why already), 'timeout' (said so already; the build is left running) or
+ * 'exited' (the build ended first).
+ *
+ * @param {object} spec
+ * @param {string[]} spec.args        gradle arguments, without --debug-jvm
+ * @param {string[]} [spec.extraArgs] appended after grails.run.args
+ * @param {object} [spec.env]         added over grails.run.env
+ * @param {string} spec.cwd           project root
+ * @param {string} spec.channelName   output channel for the build
+ * @param {string} spec.starting      what to say while it starts
+ * @param {string} spec.adapterType   debug type the session will use
+ * @param {number} spec.timeoutMs     how long to wait for the port
+ */
+async function launchDebuggee(spec) {
+  if (spec.adapterType === 'java' && !javaDebugAvailable()) {
+    const pick = await vscode.window.showErrorMessage(
+      'grails.debug.adapter is set to "java", which needs the "Debugger for Java" extension '
+      + '(vscjava.vscode-java-debug). It is not installed.',
+      'Show extension'
+    );
+    if (pick === 'Show extension') {
+      vscode.commands.executeCommand('workbench.extensions.search', 'vscjava.vscode-java-debug');
+    }
+    return { failure: 'refused' };
+  }
+
+  if (!await ensureDebugPortFree()) {
+    return { failure: 'refused' };
+  }
+
+  vscode.window.showInformationMessage(spec.starting);
+
+  // Attach only once the JVM says it is listening. A fixed setTimeout races
+  // Gradle's configure + compile phases, which on a cold start run well past
+  // any delay you would pick -- the old 3s version failed most cold starts.
+  const debugSettings = launchSettings();
+  // A wrapper script ending in `exec ./gradlew bootRun "$@"` forwards extra
+  // arguments, so appending --debug-jvm to grails.run.command is the useful
+  // default; grails.run.debugCommand overrides it when it is not.
+  const debugCommandLine = debugSettings.debugCommand
+    || (debugSettings.command ? `${debugSettings.command} --debug-jvm` : '');
+
+  return new Promise(resolve => {
+    let settled = false;
+    let giveUp = null;
+    const settle = result => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(giveUp);
+      resolve(result);
+    };
+
+    gradleDebugProcess = spawnBuild({
+      args: spec.args.concat(['--debug-jvm'], debugSettings.extraArgs, spec.extraArgs || []),
+      commandLine: debugCommandLine,
+      cwd: spec.cwd,
+      env: spec.env,
+      channelName: spec.channelName,
+      onLine: line => {
+        noteOutputLine(line);
+        const m = JDWP_READY_RE.exec(line);
+        // Only the first one: a server=y JDWP agent prints it again after the
+        // debugger disconnects.
+        if (m && !settled) {
+          gradleDebugPort = Number(m[1]);
+          settle({ port: gradleDebugPort });
+        }
+      }
+    });
+
+    if (!gradleDebugProcess) {
+      resolve({ failure: 'refused' }); // spawnBuild already said what was wrong
+      return;
+    }
+    refreshStatusBar();
+
+    giveUp = setTimeout(() => {
+      if (settled) return;
+      outputChannel('Grails - Debug').appendLine(
+        '[grails] gave up: the JVM never reported that it was listening');
+      vscode.window.showErrorMessage(
+        `Gave up waiting for the JVM to open its debug port after ${spec.timeoutMs / 1000}s. ` +
+        'See the "Grails - Debug" output channel.'
+      );
+      settle({ failure: 'timeout' });
+    }, spec.timeoutMs);
+
+    gradleDebugProcess.on('close', code => {
+      settle({ failure: 'exited' });
+      vscode.window.showInformationMessage(`Grails debug process exited with code ${code}`);
+      gradleDebugProcess = null;
+      gradleDebugPort = null;
+      launchedPort = null;
+      refreshStatusBar();
+    });
+  });
+}
+
+/**
+ * Turns a `request: "launch"` configuration into the attach one VS Code runs.
+ *
+ * VS Code starts the session from whatever this returns, so the app is started
+ * here, the port awaited, and an attach configuration handed back for the Groovy
+ * adapter, which only ever sees attach. Returning undefined cancels the session.
+ */
+async function startForLaunch(folder, config) {
+  const root = config.projectDir
+    || (folder ? folder.uri.fsPath : requireWorkspace('Grails/Gradle project'));
+  if (!root) {
+    return undefined;
+  }
+
+  if (gradleDebugProcess) {
+    // Already started, from the status bar or an earlier F5. A second bootRun
+    // would fight it for 5005 and 8080, so attach to the one that is up -- once
+    // it has said which port it is on.
+    const active = vscode.debug.activeDebugSession;
+    if (!gradleDebugPort || (active && active.type === DEBUG_TYPE)) {
+      vscode.window.showWarningMessage(gradleDebugPort
+        ? 'The running Grails app already has a debugger attached.'
+        : 'A Grails debug process is still starting. Try again once it has opened its '
+          + 'debug port, or stop it first.');
+      return undefined;
+    }
+    vscode.window.showInformationMessage('Attaching to the Grails debug process that is already running.');
+    return attachConfiguration(root, gradleDebugPort, DEBUG_TYPE, config.name, config.sourcePaths);
+  }
+
+  const result = await launchDebuggee({
+    args: ['bootRun'],
+    extraArgs: config.args,
+    env: config.env,
+    cwd: root,
+    channelName: 'Grails - Debug',
+    starting: 'Starting Grails in debug mode...',
+    adapterType: DEBUG_TYPE,
+    timeoutMs: config.startTimeout > 0 ? config.startTimeout * 1000 : JDWP_WAIT_MS
+  });
+  if (!result.port) {
+    if (result.failure === 'exited') {
+      vscode.window.showErrorMessage(
+        'Grails exited before opening its debug port. See the "Grails - Debug" output channel.');
+    } else if (result.failure === 'timeout' && gradleDebugProcess) {
+      // Launched for this session and the session is cancelled: leave nothing behind.
+      stopEverything(gradleDebugProcess, true);
+      gradleDebugProcess = null;
+      refreshStatusBar();
+    }
+    return undefined;
+  }
+  launchedPort = result.port;
+  return attachConfiguration(root, result.port, DEBUG_TYPE, config.name, config.sourcePaths);
+}
+
 /** Fills in the parts of a launch.json entry a user should not have to write. */
 const groovyConfigurationProvider = {
   resolveDebugConfiguration(folder, config) {
+    config = config || {};
     if (!config.type) {
-      // Started from the Run view with no launch.json at all.
-      config.type = 'groovy';
-      config.request = 'attach';
-      config.name = 'Attach to Grails (Groovy)';
-      config.port = 5005;
+      if (isGrailsWorkspace) {
+        // F5 with no launch.json in a Grails project: start it, as Grails: Debug App.
+        config.type = DEBUG_TYPE;
+        config.request = 'launch';
+        config.name = 'Grails: Debug App';
+      } else {
+        // Started from the Run view with no launch.json at all.
+        config.type = DEBUG_TYPE;
+        config.request = 'attach';
+        config.name = 'Attach to Grails (Groovy)';
+        config.port = 5005;
+      }
     }
-    if (!config.sourcePaths && folder) {
+    if (config.request !== 'launch' && !config.sourcePaths && folder) {
       config.sourcePaths = defaultSourcePaths(folder.uri.fsPath);
     }
     return config;
+  },
+
+  // After ${workspaceFolder} and friends in projectDir/args/env are substituted,
+  // which is why the app is started here and not in resolveDebugConfiguration.
+  resolveDebugConfigurationWithSubstitutedVariables(folder, config) {
+    return config && config.request === 'launch' ? startForLaunch(folder, config) : config;
+  }
+};
+
+/**
+ * What the Run and Debug dropdown offers without a launch.json (trigger kind
+ * Dynamic). A separate provider from the one above: a provider registered for
+ * both kinds gets its resolve methods called once per registration, and an
+ * Initial provideDebugConfigurations would duplicate package.json's
+ * initialConfigurations in a generated launch.json.
+ */
+const groovyDynamicConfigurationProvider = {
+  provideDebugConfigurations() {
+    return [{ type: DEBUG_TYPE, request: 'launch', name: 'Grails: Debug App' }];
   }
 };
 
@@ -1168,6 +1376,27 @@ function activate(context) {
     vscode.debug.registerDebugConfigurationProvider(DEBUG_TYPE, groovyConfigurationProvider),
     vscode.window.registerTreeDataProvider('grailsCommands', new GrailsCommandsProvider())
   );
+  // Dynamic (Grails: Debug App in the Run and Debug dropdown, no launch.json needed)
+  // needs a newer VS Code than the engines floor might guarantee; without it the
+  // launch.json route and the status bar still work.
+  const triggerKinds = vscode.DebugConfigurationProviderTriggerKind;
+  if (triggerKinds && triggerKinds.Dynamic !== undefined) {
+    context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider(
+      DEBUG_TYPE, groovyDynamicConfigurationProvider, triggerKinds.Dynamic));
+  }
+  // A session started from a launch configuration owns the app it started: ending
+  // the session (Stop, Disconnect) ends the app, as it does in any other debugger.
+  context.subscriptions.push(vscode.debug.onDidTerminateDebugSession(session => {
+    if (session.type !== DEBUG_TYPE || launchedPort === null || !gradleDebugProcess
+        || !session.configuration || session.configuration.port !== launchedPort) {
+      return;
+    }
+    launchedPort = null;
+    stopEverything(gradleDebugProcess, true);
+    gradleDebugProcess = null;
+    gradleDebugPort = null;
+    refreshStatusBar();
+  }));
   createStatusBar(context);
   refreshGrailsContext();
 
@@ -1248,117 +1477,52 @@ function activate(context) {
       vscode.window.showWarningMessage('A Grails debug process is already running.');
       return;
     }
-    if (!vscode.workspace.workspaceFolders) {
-      vscode.window.showErrorMessage('No workspace folder found. Open your Grails/Gradle project first.');
+    const workspaceFolder = requireWorkspace('Grails/Gradle project');
+    if (!workspaceFolder) {
       return;
     }
-    const workspaceFolder = vscode.workspace.workspaceFolders[0].uri.fsPath;
 
     const adapterType = debugAdapterType();
-    if (adapterType === 'java' && !javaDebugAvailable()) {
-      const pick = await vscode.window.showErrorMessage(
-        'grails.debug.adapter is set to "java", which needs the "Debugger for Java" extension '
-        + '(vscjava.vscode-java-debug). It is not installed.',
-        'Show extension'
-      );
-      if (pick === 'Show extension') {
-        vscode.commands.executeCommand('workbench.extensions.search', 'vscjava.vscode-java-debug');
-      }
-      return;
-    }
-
-    if (!await ensureDebugPortFree()) {
-      return;
-    }
-
-    vscode.window.showInformationMessage(spec.starting);
-
-    let attached = false;
-    let giveUp = null;
-    const attach = async port => {
-      if (attached) return;
-      attached = true;
-      clearTimeout(giveUp);
-      // Into the same channel as the build, because when an attach does not
-      // happen the only visible symptom is an application sitting suspended
-      // forever, and nothing anywhere says why.
-      const log = outputChannel('Grails - Debug');
-      log.appendLine('[grails] JVM is listening on ' + port + ', starting the '
-        + adapterType + ' debug session');
-      try {
-        // type 'groovy' is this extension's adapter; 'java' hands the session to
-        // vscode-java-debug, which cannot bind breakpoints in .groovy files
-        // because it resolves class names through JDT. Kept as an escape hatch.
-        const started = await vscode.debug.startDebugging(vscode.workspace.workspaceFolders[0], {
-          name: 'Attach to Grails',
-          type: adapterType,
-          request: 'attach',
-          hostName: 'localhost',
-          port,
-          sourcePaths: defaultSourcePaths(workspaceFolder)
-        });
-        if (!started) {
-          // It returns false rather than throwing when it declines, which
-          // otherwise looks exactly like everything having worked.
-          log.appendLine('[grails] startDebugging returned false -- no session');
-          vscode.window.showErrorMessage(
-            'VSCode declined to start the groovy debug session. See the '
-            + '"Grails - Debug" output for details.');
-          return;
-        }
-        log.appendLine('[grails] debug session started');
-        vscode.window.showInformationMessage(
-          `Debugger attached to Grails on port ${port} (${adapterType} adapter).`);
-      } catch (err) {
-        log.appendLine('[grails] startDebugging failed: ' + err.message);
-        vscode.window.showErrorMessage(`Failed to attach debugger: ${err.message}`);
-      }
-    };
-
-    // Attach only once the JVM says it is listening. A fixed setTimeout races
-    // Gradle's configure + compile phases, which on a cold start run well past
-    // any delay you would pick -- the old 3s version failed most cold starts.
-    const debugSettings = launchSettings();
-    // A wrapper script ending in `exec ./gradlew bootRun "$@"` forwards extra
-    // arguments, so appending --debug-jvm to grails.run.command is the useful
-    // default; grails.run.debugCommand overrides it when it is not.
-    const debugCommandLine = debugSettings.debugCommand
-      || (debugSettings.command ? `${debugSettings.command} --debug-jvm` : '');
-
-    gradleDebugProcess = spawnBuild({
-      args: spec.args.concat(['--debug-jvm'], debugSettings.extraArgs),
-      commandLine: debugCommandLine,
+    const result = await launchDebuggee({
+      args: spec.args,
       cwd: workspaceFolder,
       channelName: spec.channelName,
-      onLine: line => {
-        noteOutputLine(line);
-        const m = JDWP_READY_RE.exec(line);
-        if (m) attach(Number(m[1]));
-      }
+      starting: spec.starting,
+      adapterType,
+      timeoutMs: JDWP_WAIT_MS
     });
-
-    if (!gradleDebugProcess) {
-      return; // spawnBuild already said what was wrong
+    if (!result.port) {
+      return; // launchDebuggee already said what was wrong
     }
-    refreshStatusBar();
-
-    giveUp = setTimeout(() => {
-      if (attached) return;
-      attached = true;
-      outputChannel('Grails - Debug').appendLine(
-        '[grails] gave up: the JVM never reported that it was listening');
-      vscode.window.showErrorMessage(
-        `Gave up waiting for the JVM to open its debug port after ${JDWP_WAIT_MS / 1000}s. ` +
-        'See the "Grails - Debug" output channel.'
-      );
-    }, JDWP_WAIT_MS);
-
-    gradleDebugProcess.on('close', code => {
-      clearTimeout(giveUp);
-      vscode.window.showInformationMessage(`Grails debug process exited with code ${code}`);
-      gradleDebugProcess = null;
-      refreshStatusBar();
-    });
+    const port = result.port;
+    // Into the same channel as the build, because when an attach does not
+    // happen the only visible symptom is an application sitting suspended
+    // forever, and nothing anywhere says why.
+    const log = outputChannel('Grails - Debug');
+    log.appendLine('[grails] JVM is listening on ' + port + ', starting the '
+      + adapterType + ' debug session');
+    try {
+      // type 'groovy-dap' is this extension's adapter; 'java' hands the session to
+      // vscode-java-debug, which cannot bind breakpoints in .groovy files
+      // because it resolves class names through JDT. Kept as an escape hatch.
+      const started = await vscode.debug.startDebugging(vscode.workspace.workspaceFolders[0],
+        attachConfiguration(workspaceFolder, port, adapterType, 'Attach to Grails'));
+      if (!started) {
+        // It returns false rather than throwing when it declines, which
+        // otherwise looks exactly like everything having worked.
+        log.appendLine('[grails] startDebugging returned false -- no session');
+        vscode.window.showErrorMessage(
+          'VSCode declined to start the groovy debug session. See the '
+          + '"Grails - Debug" output for details.');
+        return;
+      }
+      log.appendLine('[grails] debug session started');
+      vscode.window.showInformationMessage(
+        `Debugger attached to Grails on port ${port} (${adapterType} adapter).`);
+    } catch (err) {
+      log.appendLine('[grails] startDebugging failed: ' + err.message);
+      vscode.window.showErrorMessage(`Failed to attach debugger: ${err.message}`);
+    }
   };
 
   const debugGrailsAppCommand = vscode.commands.registerCommand('grails.debug', () =>
@@ -1401,6 +1565,8 @@ function activate(context) {
     vscode.window.showInformationMessage('Stopping Grails debug process...');
     stopEverything(gradleDebugProcess, true);
     gradleDebugProcess = null;
+    gradleDebugPort = null;
+    launchedPort = null;
     refreshStatusBar();
   });
 
