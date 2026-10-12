@@ -74,7 +74,7 @@ configuration:
 {
   "type": "groovy-dap",
   "request": "attach",
-  "name": "Attach to Grails",
+  "name": "Attach to Grails (Groovy)",
   "hostName": "localhost",
   "port": 5005
 }
@@ -87,8 +87,9 @@ Code Groovy's, not this extension's.
 
 ### Launch configuration (new, not yet verified in a real window)
 
-A **Grails: Debug App** launch configuration ("Grails (Groovy debugger)" in the
-Run and Debug dropdown) starts `./gradlew bootRun --debug-jvm` and attaches; F5
+A **Grails: Debug App** launch configuration (offered in the Run and Debug
+dropdown and under Add Configuration; the debugger itself is labelled "Grails
+(Groovy debugger)") starts `./gradlew bootRun --debug-jvm` and attaches; F5
 with no `launch.json` in a Grails workspace does the same. It attaches instead of
 starting a second app if one is already listening, and ending the session stops an
 app it started. Launch attributes: `projectDir`, `args`, `env`, `startTimeout`,
@@ -138,11 +139,18 @@ The application's log goes to an output channel — **Grails - Normal** for Run 
   application itself needs Java 21 or newer.
 - **A full JDK, 17 or newer** (not a JRE: the adapter uses the `jdk.jdi` module).
   The JDK your application runs on can be a different one.
-- **JDK discovery.** When `JAVA_HOME` is missing the extension looks for one, in
-  this order: `grails.debug.javaPath`, `JAVA_HOME` from `grails.run.env` or the
-  environment, macOS `java_home`, SDKMAN, the usual install folders (Homebrew,
-  Linux, Windows), then `java` on `PATH` (the macOS `/usr/bin/java` stub is
-  skipped). If none is found you get one error naming the ways out. A VS Code
+- **JDK discovery.** The debug adapter's JDK is searched in this order, and the
+  first usable one wins: `grails.debug.javaPath`, `JAVA_HOME` from `grails.run.env`
+  or the environment, macOS `java_home`, SDKMAN, the usual install folders
+  (Homebrew, Linux, Windows), then `java` on `PATH` (the macOS `/usr/bin/java` stub
+  is skipped). A usable JDK is Java 17 or newer with the `jdk.jdi` module. For the
+  application's build (`gradlew`) the only check is that `JAVA_HOME`'s `bin/java`
+  is executable: a valid `JAVA_HOME` of any version is left alone, and the search
+  only fills one in when there is none. The single error naming the ways out
+  appears only when there is no usable `java` at all (none found and none on
+  `PATH`, or only the macOS stub). A `java` that is on `PATH` but too old or
+  without `jdk.jdi` is still handed to the adapter, which then fails to start with
+  Java's own message; point `grails.debug.javaPath` at a full JDK 17+. A VS Code
   started from the Dock has no `JAVA_HOME`; set `grails.run.env`
   (`{"JAVA_HOME": "..."}`) or `grails.debug.javaPath`, or start VS Code from a
   terminal with `code .`. Discovery from a Dock-launched window is not yet verified.
